@@ -1,0 +1,2528 @@
+---
+title: "TE_expression_MS_2019"
+author: "sna"
+date: "6/11/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+Below are the R commands used to make figures for "Dynamic patterns of transcript abundance of transposable element families in maize" by Anderson et al. (2019)
+Input files are availble at https://github.com/SNAnderson/TE_expression
+
+```{r}
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(pheatmap)
+library(RColorBrewer)
+library(dplyr)
+library(gridExtra)
+library(matrixStats)
+library(DESeq2)
+library(modes)
+library(ggridges)
+library(diptest)
+library(plyr)
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+all.tefam <- read.table("family_sum_combined_counts_DevExp19_29Jan19.txt",header=T,stringsAsFactors = F)
+rownames(all.tefam) <-all.tefam$family
+all.tefam$family <- NULL
+colnames(all.tefam) <- gsub("fieldear","ear",colnames(all.tefam))
+```
+
+```{r}
+prop.unique.all <- read.table("family_prop_unique_DevExp19_29Jan19.txt",header=T,stringsAsFactors = F)
+rownames(prop.unique.all) <- prop.unique.all$family
+prop.unique.all$family <- NULL
+```
+
+```{r}
+subset.dev <- read.table("RNAseq_subset.txt",header=F,sep="\t",stringsAsFactors = F)
+subset.dev <- mutate(subset.dev,noRep = paste(V1,V2,V3,V4,sep="_"))
+subset.dev.tmp <- subset(subset.dev,subset.dev$V7 != "late.endosperm")
+subset.dev <- subset.dev.tmp
+```
+
+
+
+```{r}
+all.samples <- data.frame(names(all.tefam))
+all.samples$colname <- paste(all.samples$names.all.tefam.)
+all.samples <- separate(all.samples,names.all.tefam.,c("tissue","details","experiment","genotype","rep"),sep="_")
+keep.samples <- subset(all.samples,all.samples$experiment != "SB" & all.samples$experiment != "SW" & all.samples$experiment != "SM" & all.samples$rep != 1.1 & all.samples$rep != 2.1 & all.samples$rep != 3.1)
+```
+
+```{r}
+stressed.samples <- subset(all.samples,all.samples$details %in% c("salt","heat","cold","uv"))
+stress.subset <- subset(all.samples,all.samples$experiment == "SW")
+```
+
+
+Genes and mapping summary
+```{r}
+all.genes <- read.table("unique.gene.reads.DevExp19.txt",header=T,stringsAsFactors = F)
+colnames(all.genes) <- gsub("fieldear","ear",colnames(all.genes))
+```
+
+```{r}
+RIL.elements <- read.table("individual_elements_unique_read_RILs_13March2019.txt",header = T,stringsAsFactors = F)
+colnames(RIL.elements) <- substr(colnames(RIL.elements),0,nchar(colnames(RIL.elements))-7)
+RIL.elements2 <- subset(RIL.elements,!substr(rownames(RIL.elements),0,1)=="Z")
+
+RIL.elements.rpm <- RIL.elements2
+for(i in 1:ncol(RIL.elements.rpm)){
+   RIL.elements.rpm[,i] <- RIL.elements2[,i]/sum(all.tefam[,colnames(RIL.elements.rpm)[i]]) * 1000000
+}
+RIL.elements.expression <- log2(1+RIL.elements.rpm)
+```
+
+
+```{r}
+keep.all.genes <- all.genes[,!grepl("unique.1",colnames(all.genes))]
+colnames(keep.all.genes) <- substr(colnames(keep.all.genes),0,nchar(colnames(keep.all.genes))-7)
+keep.all.genes.rpm <- keep.all.genes
+for(i in 1:ncol(keep.all.genes)){
+  keep.all.genes.rpm[,i] <- keep.all.genes[,i]/sum(keep.all.genes[,i]) * 1e6
+}
+
+
+B73.gene.rpm.TEtable <- keep.all.genes.rpm[,colnames(keep.all.genes.rpm) %in% keep.samples[keep.samples$genotype == "B","colname"]]
+
+expressed.genes.rpm <- subset(B73.gene.rpm.TEtable,rowSums(B73.gene.rpm.TEtable >= 1) >= 3)
+expressed.genes.log2 <- log2(1+expressed.genes.rpm)
+```
+
+```{r}
+TE.mapping.summary <- read.table("te_mapping_summary_DevExp19_29Jan19.txt",header=F,stringsAsFactors = F)
+TE.mapping.summary$V1 <- gsub("fieldear","ear",TE.mapping.summary$V1)
+duplicated.summary <- TE.mapping.summary$V1[duplicated(TE.mapping.summary$V1)]
+rm.rows <- c()
+for(i in 1:length(duplicated.summary)){
+  rm.rows <- c(rm.rows,grep(duplicated.summary[i],TE.mapping.summary$V1)[1])
+}
+TE.mapping.summary.keep <- subset(TE.mapping.summary,!rownames(TE.mapping.summary)%in% rm.rows & TE.mapping.summary$V1 %in% keep.samples$colname)
+
+#x-axis as % of reads, not RPM
+rownames(TE.mapping.summary.keep) <- TE.mapping.summary.keep$V1
+TE.mapping.summary.keep$V1 <- NULL
+names(TE.mapping.summary.keep) <- c("unique_gene", "unique_te", "unique_te.gene", "unique_not_determined", "multi_te", "multi_te.gene", "multi_not_determined", "total_reads")
+accepted <- TE.mapping.summary.keep[,c(1:3,5:6)]
+a_rpm <- accepted
+for (i in 1:5){
+  a_rpm[,i] <- accepted[,i]/rowSums(accepted) * 100
+}
+a_rpm$library <- rownames(a_rpm)
+melt_summary <- melt(a_rpm[,c(2:6)])
+melt_summary$library <- factor(melt_summary$library,levels=a_rpm[order(a_rpm$unique_gene),"library"])
+melt_summary$lib2 <- paste(melt_summary$library)
+melt_summary <- separate(melt_summary,lib2,c("tissue","details","experiment","genotype","rep"),sep="_")
+melt_summary$variable <- factor(melt_summary$variable,levels=c("multi_te.gene","unique_te.gene","multi_te","unique_te"))
+```
+B73 only
+```{r}
+ggplot(subset(melt_summary,melt_summary$genotype == "B"), aes(x = library, y = value, fill = variable)) + geom_bar(stat = "identity") + scale_fill_manual(values=c("lightblue","pink","blue","red")) + coord_flip() + facet_wrap(.~tissue,scales="free_y",ncol=2)
+```
+
+
+
+```{r}
+melt_summary_B <- subset(melt_summary,melt_summary$genotype == "B")
+
+a_rpm2 <- a_rpm
+a_rpm2 <- separate(a_rpm2,library,c("tissue","details","experiment","genotype","rep"),sep="_")
+a_rpm2$library <- rownames(a_rpm2)
+a_rpm2$sumTE <- rowSums(a_rpm2[,2:5])
+
+melt_summary_B$library <- factor(melt_summary_B$library,levels=a_rpm2$library[order(a_rpm2[,"tissue"],a_rpm2[,"sumTE"])])
+ggplot(melt_summary_B, aes(x = library, y = value, fill = variable)) + geom_bar(stat = "identity") + scale_fill_manual(values=c("lightblue","pink","blue","red")) + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),text = element_text(size = 6))  
+
+ggplot(subset(melt_summary_B,melt_summary_B$library %in% subset.dev$V1), aes(x = library, y = value, fill = variable)) + geom_bar(stat = "identity") + scale_fill_manual(values=c("lightblue","pink","blue","red")) + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),text = element_text())  + coord_flip() 
+```
+
+Range of TE expression
+```{r}
+100 - max(subset(a_rpm2,grepl("_B_",a_rpm2$library))[,"unique_gene"])
+100 - min(subset(a_rpm2,grepl("_B_",a_rpm2$library))[,"unique_gene"])
+100 - mean(subset(a_rpm2,grepl("_B_",a_rpm2$library))[,"unique_gene"])
+```
+
+
+
+
+TE RPM
+```{r}
+tmp <- all.tefam[!rownames(all.tefam) == "Multifam",]
+all.tefam <- tmp
+
+all.tefam.rpm <- all.tefam
+for(i in 1:ncol(all.tefam.rpm)){
+  all.tefam.rpm[,i] <- all.tefam[,i]/sum(all.tefam[,i]) * 1000000
+}
+all.tefam.rpm.TEtable <- all.tefam.rpm[!rownames(all.tefam.rpm) == "Gene",]
+#write.table(all.tefam.rpm.TEtable,file="~/Dropbox/mn/projects/TE_rnaseq_ms/TE_RPM_matrix.txt",sep="\t",quote=F)
+all.tefam_log2.rpm.te <- as.matrix(log2(all.tefam.rpm.TEtable + 1))
+
+B73.tefam.rpm.TEtable <- all.tefam.rpm.TEtable[,colnames(all.tefam.rpm.TEtable) %in% keep.samples[keep.samples$genotype == "B","colname"]]
+
+expressed.families <- subset(B73.tefam.rpm.TEtable,rowSums(B73.tefam.rpm.TEtable >= 1) >= 3)
+nrow(expressed.families)
+table(substr(rownames(expressed.families),0,2))
+```
+
+
+
+```{r}
+B73.attributes <- read.table("B73_filteredTE_combined_attributes_12.20.18.txt",header=T,stringsAsFactors = F)
+
+plot.expressed.orders <- data.frame(table(substr(rownames(expressed.families),0,2)))
+plot.expressed.orders$order <- factor(c("Helitron","TIR","LINES.SINES","LTR","LINES.SINES"),levels=c("LTR","TIR","Helitron","LINES.SINES"))
+plot.expressed.orders$set <- "expressed"
+
+unique.fams <- unique(B73.attributes$fam)
+plot.not.expressed.orders <- data.frame(table(substr(unique.fams[!unique.fams %in% rownames(expressed.families)],0,2)))
+plot.not.expressed.orders$order <- factor(c("Helitron","TIR","LINES.SINES","LTR","LINES.SINES"),levels=c("LTR","TIR","Helitron","LINES.SINES"))
+plot.not.expressed.orders$set <- "not.expressed"
+
+plot.orders <- rbind(plot.expressed.orders,plot.not.expressed.orders)
+
+ggplot(plot.orders,aes(x=order,y=Freq,fill=order)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())   + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink")) + facet_wrap(set~.,nrow=2,scales="free") +  geom_text(aes(label=Freq))
+```
+
+
+```{r}
+B73.famsize <- data.frame(table(B73.attributes$fam))
+names(B73.famsize) <- c("family","members")
+expressed.families$order <- substr(rownames(expressed.families),0,2)
+B73.family.attributes <- B73.famsize
+B73.family.attributes$superfam <- substr(B73.family.attributes$family,0,3)
+B73.family.attributes$order <- substr(B73.family.attributes$family,0,2)
+
+
+B73.family.attributes$famsize <- factor(ifelse(B73.family.attributes$members == 1, "single.member",
+                                               ifelse(B73.family.attributes$members <= 30,"small",
+                                                      ifelse(B73.family.attributes$members <= 500, "medium","large"))),levels=rev(c("single.member","small","medium","large")))
+
+table(B73.family.attributes$famsize)
+B73.family.attributes$expressed <- ifelse(B73.family.attributes$family %in% rownames(expressed.families),"expressed","not.expressed")
+```
+
+```{r}
+fam.size.plot <- data.frame(table(B73.family.attributes[,c("famsize","order","expressed")]))
+for(i in 1:nrow(fam.size.plot)){
+  fam.size.plot$prop[i] <- fam.size.plot[i,"Freq"]/sum(subset(fam.size.plot,fam.size.plot$order == fam.size.plot[i,"order"] & fam.size.plot$expressed == fam.size.plot[i,"expressed"])[,"Freq"])
+  fam.size.plot$prop.expressed[i] <- fam.size.plot[i,"Freq"]/sum(subset(fam.size.plot,fam.size.plot$order == fam.size.plot[i,"order"] & fam.size.plot$famsize == fam.size.plot[i,"famsize"])[,"Freq"])
+}
+
+a <- ggplot(subset(fam.size.plot,fam.size.plot$order %in% c("RL","DT","DH") & !is.na(fam.size.plot$prop.expressed)),aes(y=prop,x=expressed,fill=famsize)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_grid(.~order,scales="free") + scale_fill_brewer(palette = "GnBu") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  geom_text(aes(label=Freq), position = position_stack(.5))
+
+b <- ggplot(subset(fam.size.plot,fam.size.plot$order %in% c("RL","DT","DH") & !is.na(fam.size.plot$prop.expressed)),aes(y=prop.expressed,x=famsize,fill=expressed)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),text = element_text(size=20)) + facet_grid(.~order,scales="free") + scale_fill_brewer(palette = "Paired") + theme(axis.text.x = element_text(angle = 90, hjust = 1),text = element_text(size=20)) +  geom_text(aes(label=Freq), position = position_stack(.5))
+
+grid.arrange(a,b,nrow=2)
+```
+
+LTR age vs expression
+```{r}
+LTR.attributes <- subset(B73.attributes,!is.na(B73.attributes$LTRsimilarity))
+fam.LTR.attributes <-  data.frame(LTR.attributes %>% group_by(fam) %>% dplyr::summarize(members = n(), maxAge = max(LTRsimilarity),meanAge = mean(LTRsimilarity)))
+fam.LTR.attributes$expressed <- fam.LTR.attributes$fam %in% rownames(expressed.families)
+fam.LTR.attributes$famsize <- factor(ifelse(fam.LTR.attributes$fam %in% B73.family.attributes[B73.family.attributes$famsize == "single.member","family"], "single.member",
+                                               ifelse(fam.LTR.attributes$fam %in% B73.family.attributes[B73.family.attributes$famsize == "small","family"],"small",
+                                                      ifelse(fam.LTR.attributes$fam %in% B73.family.attributes[B73.family.attributes$famsize == "medium","family"], "medium","large"))),levels=rev(c("single.member","small","medium","large")))
+
+ggplot(fam.LTR.attributes,aes(x=expressed,y=maxAge, fill = expressed)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+ stat_summary(fun.y=median, geom="point", size=2,color="black") + facet_wrap(.~famsize)
+ggplot(fam.LTR.attributes,aes(x=expressed,y=meanAge,fill = expressed)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+ stat_summary(fun.y=median, geom="point", size=2,color="black")+ facet_wrap(.~famsize)
+```
+
+```{r}
+plot.expressed.superfams <- data.frame(table(substr(rownames(expressed.families),0,3)))
+plot.expressed.superfams$set <- "expressed"
+
+unique.fams <- unique(B73.attributes$fam)
+plot.not.expressed.superfams <- data.frame(table(substr(unique.fams[!unique.fams %in% rownames(expressed.families)],0,3)))
+plot.not.expressed.superfams$set <- "not.expressed"
+
+plot.all.superfams <- data.frame(table(substr(unique.fams,0,3)))
+plot.all.superfams$set <- "all"
+
+plot.superfams <- rbind(plot.expressed.superfams,plot.not.expressed.superfams,plot.all.superfams)
+plot.superfams$order <- substr(plot.superfams$Var1,0,2)
+plot.superfams$set <- factor(plot.superfams$set,levels=c("expressed","all","not.expressed"))
+
+ggplot(subset(plot.superfams,plot.superfams$order %in% c("RL","DT") & plot.superfams$set != "not.expressed"),aes(x=set,y=Freq,fill=Var1)) + geom_bar(stat="identity",position = position_fill())  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())   + theme(axis.text.x = element_text(angle = 90, hjust = 1))  + facet_wrap(.~order,nrow=1,scales="free")
+
+plot.all.superfams$prop <- plot.all.superfams$Freq/sum(plot.all.superfams$Freq)
+plot.expressed.superfams$prop <- plot.expressed.superfams$Freq/sum(plot.expressed.superfams$Freq)
+
+plot.superfams2 <- rbind(plot.expressed.superfams,plot.all.superfams)
+plot.superfams2$order <- substr(plot.superfams2$Var1,0,2)
+plot.superfams2$set <- factor(plot.superfams2$set,levels=c("expressed","all","not.expressed"))
+
+ggplot(subset(plot.superfams2,plot.superfams2$order %in% c("RL","DT")),aes(x=Var1,y=prop,fill=set)) + geom_bar(stat="identity",position = position_dodge())  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())   + theme(axis.text.x = element_text(angle = 90, hjust = 1))  + facet_wrap(.~order,nrow=1,scales="free") 
+```
+
+```{r}
+ltr.superfams.a <- subset(plot.all.superfams,grepl("RL",plot.all.superfams$Var1))
+ltr.superfams.a$prop2 <- ltr.superfams.a$Freq/sum(ltr.superfams.a$Freq)
+ltr.superfams.e <- subset(plot.expressed.superfams,grepl("RL",plot.expressed.superfams$Var1))
+ltr.superfams.e$prop2 <- ltr.superfams.e$Freq/sum(ltr.superfams.e$Freq)
+
+tir.superfams.a <- subset(plot.all.superfams,grepl("DT",plot.all.superfams$Var1))
+tir.superfams.a$prop2 <- tir.superfams.a$Freq/sum(tir.superfams.a$Freq)
+tir.superfams.e <- subset(plot.expressed.superfams,grepl("DT",plot.expressed.superfams$Var1))
+tir.superfams.e$prop2 <- tir.superfams.e$Freq/sum(tir.superfams.e$Freq)
+
+ltr.superfams.a$order <- "LTR"
+ltr.superfams.a$set <- "all"
+ltr.superfams.e$order <- "LTR"
+ltr.superfams.e$set <- "expressed"
+tir.superfams.a$order <- "TIR"
+tir.superfams.a$set <- "all"
+tir.superfams.e$order <- "TIR"
+tir.superfams.e$set <- "expressed"
+
+plot.superfams3 <- rbind(ltr.superfams.a,ltr.superfams.e,tir.superfams.a,tir.superfams.e)
+
+ggplot(plot.superfams3,aes(x=Var1,y=prop2,fill=set)) + geom_bar(stat="identity",position = position_dodge())  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())   + theme(axis.text.x = element_text(angle = 90, hjust = 1))  + facet_wrap(.~order,nrow=1,scales="free") 
+```
+
+
+
+```{r}
+expressed.families$order <- NULL
+B73.log2RPM <- log2(1+expressed.families)[,colnames(expressed.families) %in% keep.samples[keep.samples$genotype == "B","colname"]]
+B73.dev.log2RPM <- B73.log2RPM[,!colnames(B73.log2RPM) %in% stressed.samples$colname]
+transpose_B73 <- t(as.matrix(B73.dev.log2RPM))
+pc.B <- prcomp(transpose_B73)
+pca.sum.B <- summary(prcomp(transpose_B73))
+pca.sum2.B <- pca.sum.B$importance
+pca1.B <-  data.frame(pc.B$x[,1:2])
+pca1.B$names <- rownames(pca1.B)
+pca1.B <- separate(pca1.B,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+
+ggplot(pca1.B,aes(PC1,PC2,color=factor(pca1.B$tissue),shape=factor(pca1.B$dataset))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "tissue",shape = "dataset") + xlab(paste("PC1: ",pca.sum.B$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.B$importance[2,2] * 100,"%",collapse = ""))
+
+```
+
+repeat for genes 
+```{r}
+B73.log2RPM.genes <- expressed.genes.log2[,colnames(expressed.genes.log2) %in% keep.samples[keep.samples$genotype == "B","colname"]]
+B73.dev.log2RPM.genes <- B73.log2RPM.genes[,!colnames(B73.log2RPM.genes) %in% stressed.samples$colname]
+transpose_B73.genes <- t(as.matrix(B73.dev.log2RPM.genes))
+pc.B.genes <- prcomp(transpose_B73.genes)
+pca.sum.B.genes <- summary(prcomp(transpose_B73.genes))
+pca.sum2.B.genes <- pca.sum.B.genes$importance
+pca1.B.genes <-  data.frame(pc.B.genes$x[,1:2])
+pca1.B.genes$names <- rownames(pca1.B.genes)
+pca1.B.genes <- separate(pca1.B.genes,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+
+ggplot(pca1.B.genes,aes(PC1,PC2,color=factor(pca1.B.genes$tissue),shape=factor(pca1.B.genes$dataset))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "tissue",shape = "dataset") + xlab(paste("PC1: ",pca.sum.B.genes$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.B.genes$importance[2,2] * 100,"%",collapse = "")) 
+```
+
+
+```{r}
+Bdev_sampleDists.te <- dist(t(B73.dev.log2RPM))
+Bdev_sampleDistMatrix.te <- as.matrix(Bdev_sampleDists.te )
+colnames(Bdev_sampleDistMatrix.te) <- NULL
+
+combo.res <- pheatmap(Bdev_sampleDistMatrix.te,clustering_distance_rows="correlation",
+                clustering_distance_cols="correlation",fontsize_row = 8,border_color = NA)
+```
+
+Look at leaf libraries to make subset
+```{r}
+pheatmap(subset(Bdev_sampleDistMatrix.te,grepl("leaf_",rownames(Bdev_sampleDistMatrix.te)))[,grepl("leaf_",rownames(Bdev_sampleDistMatrix.te))],clustering_distance_rows="correlation",clustering_distance_cols="correlation",fontsize_row = 8,border_color = NA)
+```
+
+
+```{r}
+subset.devB <- all.tefam.rpm.TEtable[,colnames(all.tefam.rpm.TEtable) %in% subset.dev$V1]
+subset.devB2 <- subset(subset.devB,rowSums(subset.devB >= 1) >= 3)
+subset.log2 <- log2(1+subset.devB2)
+```
+
+
+```{r}
+transpose_B73 <- t(as.matrix(log2(1+subset.devB)))
+pc.B <- prcomp(transpose_B73)
+pca.sum.B <- summary(prcomp(transpose_B73))
+pca.sum2.B <- pca.sum.B$importance
+pca1.B <-  data.frame(pc.B$x[,1:2])
+pca1.B$names <- rownames(pca1.B)
+pca1.B <- separate(pca1.B,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+
+ggplot(pca1.B,aes(PC1,PC2,color=factor(pca1.B$tissue),shape=factor(pca1.B$dataset))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "tissue",shape = "dataset") + xlab(paste("PC1: ",pca.sum.B$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.B$importance[2,2] * 100,"%",collapse = "")) + scale_color_brewer(palette="Dark2")
+```
+
+```{r}
+B73.dev.log2RPM.genes <- expressed.genes.log2[,colnames(expressed.genes.log2) %in% colnames(subset.devB)]
+transpose_B73.genes <- t(as.matrix(B73.dev.log2RPM.genes))
+pc.B.genes <- prcomp(transpose_B73.genes)
+pca.sum.B.genes <- summary(prcomp(transpose_B73.genes))
+pca.sum2.B.genes <- pca.sum.B.genes$importance
+pca1.B.genes <-  data.frame(pc.B.genes$x[,1:2])
+pca1.B.genes$names <- rownames(pca1.B.genes)
+pca1.B.genes <- separate(pca1.B.genes,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+
+ggplot(pca1.B.genes,aes(PC1,PC2,color=factor(pca1.B.genes$tissue),shape=factor(pca1.B.genes$dataset))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "tissue",shape = "dataset") + xlab(paste("PC1: ",pca.sum.B.genes$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.B.genes$importance[2,2] * 100,"%",collapse = "")) + scale_color_brewer(palette="Dark2")
+```
+
+
+
+
+```{r}
+pheatmap(subset.log2/rowMaxs(as.matrix(subset.log2)),fontsize_row = 8,border_color = NA)
+```
+
+```{r}
+qualitative.subset <- subset.devB2
+qualitative.subset[subset.devB2 < 1] <- 0
+qualitative.subset[subset.devB2 >= 1] <- 1
+pheatmap(qualitative.subset,fontsize_row = 8,border_color = NA)
+```
+
+
+
+Make file with means of biological replicates
+```{r}
+keep.expressed.families <- expressed.families[,colnames(expressed.families) %in% keep.samples$colname]
+unique.samples <- unique(substr(colnames(keep.expressed.families),0,nchar(colnames(keep.expressed.families))-1))
+
+mean.expressed.RPM <- data.frame(matrix(NA,ncol = length(unique.samples),nrow = nrow(keep.expressed.families)))
+rownames(mean.expressed.RPM) <- rownames(keep.expressed.families)
+colnames(mean.expressed.RPM) <- unique.samples
+
+for(i in 1:ncol(mean.expressed.RPM)){
+  mean.expressed.RPM[,i] <- rowMeans(keep.expressed.families[,grep(colnames(mean.expressed.RPM)[i],colnames(keep.expressed.families)),drop=F])
+}
+
+pheatmap(log2(1+mean.expressed.RPM)/rowMaxs(as.matrix(log2(1+mean.expressed.RPM))),fontsize_row = 8,border_color = NA)
+```
+
+What percent of TE reads are derived from top expressed families?
+```{r}
+top.expressor.analysis <- data.frame(matrix(NA,nrow=ncol(keep.expressed.families),ncol=11))
+rownames(top.expressor.analysis) <- colnames(keep.expressed.families)
+colnames(top.expressor.analysis) <- c(1:10,"remaining")
+
+for(i in 1:nrow(top.expressor.analysis)){
+  top.expressor.analysis[i,1:10] <- head(sort(keep.expressed.families[,i],decreasing = T),10)/sum(keep.expressed.families[,i]) * 100
+}
+
+top.expressor.analysis$remaining <- 100 - rowSums(top.expressor.analysis[,1:10])
+top.expressor.analysis$library <- rownames(top.expressor.analysis)
+
+melt.top.expressors <- melt(top.expressor.analysis)
+
+melt.top.expressors$library <- factor(melt.top.expressors$library,levels=a_rpm2$library[order(a_rpm2[,"tissue"],a_rpm2[,"sumTE"])])
+
+ggplot(melt.top.expressors, aes(x = library, y = value, fill = variable)) + geom_bar(stat = "identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_fill_manual(values=c(rainbow(10),"gray"))
+
+```
+
+Remake for figure 1
+```{r}
+fewer_tissues_per_group <- read.table("tissue_group_fewer.txt",header=F,stringsAsFactors = F)
+fewer_tissues_per_group2 <- subset(fewer_tissues_per_group,fewer_tissues_per_group$V3 == "B" & fewer_tissues_per_group$V1 %in% keep.samples$colname & !duplicated(fewer_tissues_per_group$V1))
+rownames(fewer_tissues_per_group2) <- fewer_tissues_per_group2$V1
+
+melt_summary_B <- subset(melt_summary,melt_summary$genotype == "B" & melt_summary$library %in% fewer_tissues_per_group2$V1)
+
+a_rpm2 <- subset(a_rpm,a_rpm$library %in% fewer_tissues_per_group2$V1)
+a_rpm2$sumTE <- rowSums(a_rpm2[,2:5])
+a_rpm2$tissue <- fewer_tissues_per_group2[rownames(a_rpm2),"V2"]
+
+melt_summary_B$library <- factor(melt_summary_B$library,levels=a_rpm2$library[order(a_rpm2[,"tissue"],a_rpm2[,"sumTE"])])
+
+all.plot.a <- ggplot(melt_summary_B, aes(x = library, y = value, fill = variable)) + geom_hline(yintercept = seq(0,25,5),color="gray") + geom_bar(stat = "identity") + scale_fill_manual(values=c("lightblue","pink","blue","red")) + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),text = element_text(size = 6))  
+
+melt.top.expressors2 <- subset(melt.top.expressors,paste(melt.top.expressors$library) %in% fewer_tissues_per_group2$V1)
+melt.top.expressors2$library <- factor(melt.top.expressors2$library,levels=a_rpm2$library[order(a_rpm2[,"tissue"],a_rpm2[,"sumTE"])])
+
+all.plot.b <- ggplot(melt.top.expressors2, aes(x = library, y = value, fill = variable)) + geom_bar(stat = "identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + scale_fill_manual(values=c(rainbow(10),"gray"))
+
+grid.arrange(all.plot.a,all.plot.b,ncol=1)
+```
+
+
+
+counted TE reads vs %TE to top family
+```{r}
+a_rpm2$counted.TE <- rowSums(a_rpm2[,c("unique_te","multi_te")])
+
+for(i in 1:nrow(top.expressor.analysis)){
+  top.expressor.analysis[i,"counted.TE"] <- mean(a_rpm2[grep(rownames(top.expressor.analysis)[i],rownames(a_rpm2)),"counted.TE"])
+}
+top.expressor.analysis$top.expressor <- top.expressor.analysis[,1]
+top.expressor.analysis$lib2 <- top.expressor.analysis$library
+top.expressor.analysis <- separate(top.expressor.analysis,lib2,c("tissue","details","experiment","genotype"),sep="_")
+
+ggplot(top.expressor.analysis,aes(x=counted.TE,y=top.expressor,color=tissue)) + geom_point() + theme_classic() 
+```
+
+```{r}
+cor.test(top.expressor.analysis$counted.TE,top.expressor.analysis$top.expressor)
+```
+
+
+Make means for genes
+```{r}
+keep.expressed.genes <- expressed.genes.rpm[,colnames(expressed.genes.rpm) %in% keep.samples$colname]
+
+mean.expressed.RPM.genes <- data.frame(matrix(NA,ncol = length(unique.samples),nrow = nrow(keep.expressed.genes)))
+rownames(mean.expressed.RPM.genes) <- rownames(keep.expressed.genes)
+colnames(mean.expressed.RPM.genes) <- unique.samples
+
+for(i in 1:ncol(mean.expressed.RPM.genes)){
+  mean.expressed.RPM.genes[,i] <- rowMeans(keep.expressed.genes[,grep(colnames(mean.expressed.RPM.genes)[i],colnames(keep.expressed.genes)),drop=F])
+}
+```
+
+
+```{r}
+qualitative.keep <- mean.expressed.RPM
+rownames(qualitative.keep) <- rownames(mean.expressed.RPM)
+qualitative.keep[mean.expressed.RPM < 1] <- 0
+qualitative.keep[mean.expressed.RPM >= 1] <- 1
+```
+
+How many samples are TEs expressed (break down by family size)
+```{r}
+
+expressed.famsize.tissuenum <- merge(data.frame(rowSums(qualitative.keep)),B73.family.attributes,by.x="row.names",by.y="family",all=F)
+names(expressed.famsize.tissuenum) <- c("family","tissues.expressed","members","superfam","order","fam.size")
+expressed.famsize.tissuenum2 <- subset(expressed.famsize.tissuenum,expressed.famsize.tissuenum$order %in% c("RL","DT","DH"))
+expressed.famsize.tissuenum2$order <- factor(expressed.famsize.tissuenum2$order,levels=c("RL","DT","DH"))
+
+ggplot(expressed.famsize.tissuenum2,aes(x=tissues.expressed,fill=order)) + geom_histogram() + scale_fill_manual(values=c("darkorchid3","green","steelblue"))  + theme_classic() + facet_grid(fam.size~order,scales = "free") 
+
+ggplot(expressed.famsize.tissuenum2,aes(x=tissues.expressed,y=fam.size,fill=order)) + geom_density_ridges(bandwidth = 8)  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("darkorchid3","green","steelblue"))
+
+a <- ggplot(subset(expressed.famsize.tissuenum2,expressed.famsize.tissuenum2$order == "RL"),aes(x=tissues.expressed,y=fam.size,fill=order)) + geom_density_ridges(bandwidth = 8)  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("darkorchid3"))
+b <- ggplot(subset(expressed.famsize.tissuenum2,expressed.famsize.tissuenum2$order == "DT"),aes(x=tissues.expressed,y=fam.size,fill=order)) + geom_density_ridges(bandwidth = 8)  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("green"))
+c <- ggplot(subset(expressed.famsize.tissuenum2,expressed.famsize.tissuenum2$order == "DH"),aes(x=tissues.expressed,y=fam.size,fill=order)) + geom_density_ridges(bandwidth = 8)  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("steelblue"))
+
+grid.arrange(c,b,a,nrow=1)
+```
+
+
+```{r}
+qualitative.keep.subset <- qualitative.keep[,colnames(qualitative.keep) %in% unique(substr(subset.dev$V1,0,nchar(subset.dev$V1)-1))]
+qualitative.keep.subset2 <- subset(qualitative.keep.subset,rowSums(qualitative.keep.subset) > 0)
+pheatmap(qualitative.keep.subset2,fontsize_row = 8,border_color = NA,color = c("azure","red"))
+```
+
+```{r}
+plot.order.subset <- unique(substr(subset.dev[order(subset.dev$V7),"V1"],0,nchar(subset.dev[order(subset.dev$V7),"V1"])-1))
+
+subset.categories <- unique(subset.dev$V7)
+
+for(i in 1:length(subset.categories)){
+  tmp <- paste(subset.categories[i])
+  tmp2 <- unique(substr(subset(subset.dev,subset.dev$V7 == tmp)[,"V1"],0,nchar(subset(subset.dev,subset.dev$V7 == tmp)[,"V1"])-1))
+  assign(paste(tmp),subset(qualitative.keep.subset2,rowSums(qualitative.keep.subset2[,tmp2]) == 3 & rowSums(qualitative.keep.subset2) == 3))
+}
+
+all.subset.expressed <- subset(qualitative.keep.subset2,rowSums(qualitative.keep.subset2) == 15)
+
+subset.of.families.binary <- rbind(get(subset.categories[1]),get(subset.categories[2]),get(subset.categories[3]),get(subset.categories[4]),get(subset.categories[5]),all.subset.expressed)
+
+pheatmap(subset.of.families.binary,fontsize_row = 8,border_color = NA,color = c("azure","red"))
+```
+```{r}
+melt.top.expressors2 <- subset(melt.top.expressors,melt.top.expressors$library %in% colnames(subset.of.families.binary))
+melt.top.expressors2$library <- factor(melt.top.expressors2$library,levels=plot.order.subset)
+
+ggplot(melt.top.expressors2, aes(x = library, y = value, fill = variable)) + geom_bar(stat = "identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_fill_manual(values=c(rainbow(10),"gray"))
+
+```
+
+
+TE expression by superfam
+```{r}
+superfam.expression.analysis <- mean.expressed.RPM[,colnames(mean.expressed.RPM) %in% colnames(subset.of.families.binary)]
+superfam.expression.analysis$superfam <- substr(rownames(superfam.expression.analysis),0,3)
+
+superfam.rpm <- data.frame(superfam.expression.analysis %>% group_by(superfam) %>% dplyr::summarize_all(funs(sum)))
+
+superfam.rpm2 <- melt(superfam.rpm,id.vars="superfam")
+
+superfams <- c("RLG","RLC","RLX","RIT","RIL","RST","DTA","DTH","DTM","DTC","DTT","DTX","DHH")
+superfam.rainbow <- c(rainbow(12),"black")
+superfam.rainbow[c(4,6,9,10,11,12)] <- c("#d8ff99","#00992e","#cc99ff","#6600cc","#ff80d5","#cc0099")
+
+superfam.rpm2$superfam <- factor(superfam.rpm2$superfam,levels=superfams)
+superfam.rpm2$variable <- factor(superfam.rpm2$variable,levels=plot.order.subset)
+
+ggplot(superfam.rpm2, aes(x = variable, y = value, fill = superfam)) + geom_bar(stat = "identity",position=position_dodge2()) + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_fill_manual(values = superfam.rainbow) + facet_wrap(.~variable,ncol=3,scales="free")
+
+ggplot(superfam.rpm2, aes(x = variable, y = value, fill = superfam)) + geom_bar(stat = "identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_fill_manual(values=superfam.rainbow)
+
+ggplot(superfam.rpm2, aes(x = variable, y = value, fill = superfam)) + geom_bar(stat = "identity",position=position_fill()) + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_fill_manual(values=superfam.rainbow)
+```
+
+```{r}
+all.subset.mean.rpm <- mean.expressed.RPM[,colnames(mean.expressed.RPM) %in% colnames(subset.of.families.binary)]
+all.subset.mean.rpm.expressed.log2 <- as.matrix(log2(1+subset(all.subset.mean.rpm,rowSums(all.subset.mean.rpm >=1)>=1)))
+pheatmap(all.subset.mean.rpm.expressed.log2[,plot.order.subset]/rowMaxs(all.subset.mean.rpm.expressed.log2[,plot.order.subset]),fontsize_row = 8,border_color = NA,cluster_cols = F,show_rownames = F)
+```
+
+look at proportion unique mapping
+```{r}
+rownames(B73.family.attributes) <- B73.family.attributes$family 
+single.member.fams <- rownames(subset(B73.family.attributes,B73.family.attributes$members == 1))
+
+prop.unique.subset <- prop.unique.all[rownames(prop.unique.all) %in% rownames(all.subset.mean.rpm.expressed.log2),subset.dev$V1]
+create.mask <- all.tefam.rpm[rownames(all.tefam.rpm) %in% rownames(all.subset.mean.rpm.expressed.log2),subset.dev$V1]
+prop.unique.subset[create.mask < 1] <- NA
+prop.unique.subset2 <- subset(prop.unique.subset,!rownames(prop.unique.subset) %in% single.member.fams)
+
+prop.unique.subset2$mean.prop.expressed <- rowMeans(prop.unique.subset2,na.rm=T)
+prop.unique.subset2$order <- factor(substr(rownames(prop.unique.subset2),0,2),levels=c("RL","DT","DH","RI","RS"))
+prop.unique.subset2$order2 <- factor(ifelse(prop.unique.subset2$order == "RL","LTR",ifelse(prop.unique.subset2$order == "DT","TIR",ifelse(prop.unique.subset2$order == "DH","Helitron","LINE.SINE"))),levels=c("LTR","TIR","Helitron","LINE.SINE"))
+family.ranking <- rownames(prop.unique.subset2[with(prop.unique.subset2,order(order2,-mean.prop.expressed)),])
+prop.unique.subset2$family <- factor(rownames(prop.unique.subset2),levels=family.ranking)
+
+ggplot(prop.unique.subset2,aes(x=family,y=mean.prop.expressed,color=order2)) + geom_point(alpha = .3) + theme_classic()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_color_manual(values=c("darkorchid3","green","steelblue","hotpink")) + ylim(0,1)
+```
+
+```{r}
+nrow(subset(prop.unique.subset2,prop.unique.subset2$mean.prop.expressed >=.9))
+nrow(prop.unique.subset2)
+nrow(subset(prop.unique.subset2,prop.unique.subset2$mean.prop.expressed <.2))
+tmp <- subset(prop.unique.subset2,prop.unique.subset2$mean.prop.expressed <.2)
+table(tmp$order)
+```
+
+
+```{r}
+subset.of.families.rpm <- mean.expressed.RPM[rownames(mean.expressed.RPM) %in% rownames(subset.of.families.binary),colnames(mean.expressed.RPM) %in% colnames(subset.of.families.binary)]
+log2.subset <- as.matrix(log2(1+subset.of.families.rpm))
+
+pheatmap(log2.subset[,plot.order.subset]/rowMaxs(log2.subset[,plot.order.subset]),fontsize_row = 8,border_color = NA,cutree_rows = 6,cluster_cols=F)
+#pheatmap(log2.subset,fontsize_row = 8,border_color = NA)
+```
+pies
+```{r}
+families.in.subset <- data.frame(rbind(cbind(rownames(get(subset.categories[1])),subset.categories[1]),
+                            cbind(rownames(get(subset.categories[2])),subset.categories[2]),
+                            cbind(rownames(get(subset.categories[3])),subset.categories[3]),
+                            cbind(rownames(get(subset.categories[4])),subset.categories[4]),
+                            cbind(rownames(get(subset.categories[5])),subset.categories[5]),
+                            cbind(rownames(all.subset.expressed),"all.subset.expressed")))
+names(families.in.subset) <- c("fam","tissue.type")
+families.in.subset$order <- ifelse(grepl("DH",families.in.subset$fam),"Helitron",
+                                   ifelse(grepl("DT",families.in.subset$fam),"TIR",
+                                          ifelse(grepl("RL",families.in.subset$fam),"LTR","LINES.SINES")))
+table(families.in.subset$tissue.type)
+
+orders.in.subset <- data.frame(table(families.in.subset[,c("tissue.type","order")]))
+orders.in.subset$order <- factor(orders.in.subset$order,levels=c("LTR","TIR","Helitron","LINES.SINES"))
+orders.in.subset$tissue.type <- factor(orders.in.subset$tissue.type,levels=c("all.subset.expressed","root","pollen.anther","early.endosperm","embryo","leaf"))
+
+ggplot(orders.in.subset, aes(x = tissue.type, y = Freq, fill = order)) + geom_bar(stat = "identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_polar("y",start=0) + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink"))
+
+ggplot(orders.in.subset, aes(x = "", y = Freq, fill = order)) + geom_bar(stat = "identity",position = position_fill()) + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_polar("y",start=0) + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink")) + facet_wrap(.~tissue.type,ncol = 1) + theme(axis.text.x=element_blank())
+```
+
+```{r}
+families.in.subset$fam.size.cat <- B73.family.attributes[paste(families.in.subset$fam),"famsize"]
+
+orders.in.subset2 <- data.frame(table(families.in.subset[,c("tissue.type","fam.size.cat")]))
+orders.in.subset2$fam.size.cat <- factor(orders.in.subset2$fam.size.cat,levels=c("single.member","small","medium","large"))
+orders.in.subset2$tissue.type <- factor(orders.in.subset2$tissue.type,levels=c("all.subset.expressed","root","pollen.anther","early.endosperm","embryo","leaf"))
+
+ggplot(orders.in.subset2, aes(x = "", y = Freq, fill = fam.size.cat)) + geom_bar(stat = "identity",position = position_fill()) + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_polar("y",start=0) + scale_fill_manual(values = brewer.pal(5,"YlGnBu")[2:5]) + facet_wrap(.~tissue.type,ncol = 1) + theme(axis.text.x=element_blank())
+```
+
+```{r}
+pie.one <- ggplot(orders.in.subset, aes(x = "", y = Freq, fill = order)) + geom_bar(stat = "identity",position = position_fill()) + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_polar("y",start=0) + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink")) + facet_wrap(.~tissue.type,ncol = 1) + theme(axis.text.x=element_blank())
+
+pie.two <- ggplot(orders.in.subset2, aes(x = "", y = Freq, fill = fam.size.cat)) + geom_bar(stat = "identity",position = position_fill()) + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_polar("y",start=0) + scale_fill_manual(values = brewer.pal(5,"YlGnBu")[2:5]) + facet_wrap(.~tissue.type,ncol = 1) + theme(axis.text.x=element_blank())
+
+grid.arrange(pie.one,pie.two,nrow=1)
+```
+
+
+```{r}
+subset.of.families.rpm$order <- substr(rownames(subset.of.families.rpm),0,2)
+subset.of.families.rpm$tissue <- ifelse(rownames(subset.of.families.rpm) %in% rownames(get(subset.categories[1])),subset.categories[1],ifelse(rownames(subset.of.families.rpm) %in% rownames(get(subset.categories[2])),subset.categories[2],ifelse(rownames(subset.of.families.rpm) %in% rownames(get(subset.categories[3])),subset.categories[3],ifelse(rownames(subset.of.families.rpm) %in% rownames(get(subset.categories[4])),subset.categories[4],ifelse(rownames(subset.of.families.rpm) %in% rownames(get(subset.categories[5])),subset.categories[5],"expressed.across.subset")))))
+
+table(subset.of.families.rpm[,c("order","tissue")])
+```
+
+
+
+
+For those families expressed in all tissues, what percent of reads are unique vs multi-mapping and are the same elements expressed in all tissues?
+```{r}
+unique.exp.all <- prop.unique.all[rownames(prop.unique.all) %in% rownames(all.subset.expressed),colnames(prop.unique.all) %in% subset.dev$V1]
+
+rownames(B73.famsize) <- B73.famsize$family
+
+unique.exp.all.summary <- data.frame(cbind(rowMeans(unique.exp.all),B73.famsize[rownames(unique.exp.all),"members"]))
+names(unique.exp.all.summary) <- c("unique.in.summary","annotated.in.B73")
+unique.exp.all.summary.multimem <- subset(unique.exp.all.summary,unique.exp.all.summary$annotated.in.B73 > 1)
+unique.exp.all.summary.multimem$family <- factor(rownames(unique.exp.all.summary.multimem),levels=rownames(unique.exp.all.summary.multimem[order(unique.exp.all.summary.multimem$unique.in.summary,decreasing = T),]))
+unique.exp.all.summary.multimem$order <- factor(substr(unique.exp.all.summary.multimem$family,0,2),levels=c("RL","DT","DH","RI"))
+
+ggplot(unique.exp.all.summary.multimem,aes(x=family,y=unique.in.summary,color=order)) + geom_point() + theme_classic()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_color_manual(values=c("darkorchid3","green","steelblue","hotpink")) + ylim(0,1)
+```
+
+```{r}
+elements.subset <- read.table("dev.subset.per.element.counts.21Mar19.txt",header=T,stringsAsFactors = F)
+elements.subset2 <- elements.subset[,colnames(elements.subset) %in% subset.dev$V1]
+```
+
+```{r}
+families.for.elements <- subset(unique.exp.all.summary.multimem,unique.exp.all.summary.multimem$annotated.in.B73 <=5 & unique.exp.all.summary.multimem$unique.in.summary > .5)
+```
+
+
+```{r}
+plot.dev.fam.of.interest <- function(fam.of.interest){
+
+prop.unique.2fam <- prop.unique.all[fam.of.interest,colnames(prop.unique.all) %in% subset.dev$V1]
+rpm.2fam <- all.tefam.rpm[fam.of.interest,subset.dev$V1]
+unique.2 <- rpm.2fam * prop.unique.2fam
+unique.2$type <- "unique"
+unique.2$fam <- fam.of.interest
+multi.2 <- rpm.2fam * (1-prop.unique.2fam)
+multi.2$type <- "multi"
+multi.2$fam <- fam.of.interest
+
+both <- rbind(unique.2,multi.2)
+melt.both <- melt(both,id.vars = c("type","fam"))
+
+melt.both$variable <- factor(melt.both$variable,levels=subset.dev$V1)
+a <- ggplot() + geom_bar(aes(x=variable,y=value,fill=type),data=melt.both,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) 
+
+
+
+dev.fam.of.interest <- subset(elements.subset2,grepl(fam.of.interest,rownames(elements.subset2)))
+dev.fam.of.interest.2 <- dev.fam.of.interest
+for(i in 1:ncol(dev.fam.of.interest)){
+  dev.fam.of.interest.2[,i] <- dev.fam.of.interest[,i] / sum(all.tefam[,colnames(dev.fam.of.interest)[i]]) * 1000000
+}
+dev.fam.of.interest.2$element <- rownames(dev.fam.of.interest.2)
+melt.dev.fam.of.interest <- melt(dev.fam.of.interest.2,id.vars="element")
+melt.dev.fam.of.interest$variable <- factor(paste(melt.dev.fam.of.interest$variable),levels=subset.dev$V1)
+
+b <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.dev.fam.of.interest,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+return(grid.arrange(a,b,nrow=1))
+}
+```
+
+```{r}
+plot.dev.fam.of.interest(rownames(families.for.elements)[1])
+plot.dev.fam.of.interest(rownames(families.for.elements)[2])
+plot.dev.fam.of.interest(rownames(families.for.elements)[3])
+plot.dev.fam.of.interest(rownames(families.for.elements)[4])
+plot.dev.fam.of.interest(rownames(families.for.elements)[5])
+plot.dev.fam.of.interest(rownames(families.for.elements)[6])
+plot.dev.fam.of.interest(rownames(families.for.elements)[7])
+plot.dev.fam.of.interest(rownames(families.for.elements)[8])
+plot.dev.fam.of.interest(rownames(families.for.elements)[9])
+```
+
+```{r}
+families.for.elements2 <- subset(unique.exp.all.summary.multimem,unique.exp.all.summary.multimem$annotated.in.B73 >5 & unique.exp.all.summary.multimem$annotated.in.B73 <=10 & unique.exp.all.summary.multimem$unique.in.summary > .5)
+
+plot.dev.fam.of.interest(rownames(families.for.elements2)[1])
+plot.dev.fam.of.interest(rownames(families.for.elements2)[2])
+plot.dev.fam.of.interest(rownames(families.for.elements2)[3])
+```
+
+```{r}
+fam.of.interest <- "RLG01495"
+dev.fam.of.interest <- subset(elements.subset2,grepl(fam.of.interest,rownames(elements.subset2)))
+dev.fam.of.interest.2 <- dev.fam.of.interest
+for(i in 1:ncol(dev.fam.of.interest)){
+  dev.fam.of.interest.2[,i] <- dev.fam.of.interest[,i] / sum(all.tefam[,colnames(dev.fam.of.interest)[i]]) * 1000000
+}
+dev.fam.of.interest.2$element <- rownames(dev.fam.of.interest.2)
+melt.dev.fam.of.interest <- melt(dev.fam.of.interest.2,id.vars="element")
+melt.dev.fam.of.interest$variable <- factor(paste(melt.dev.fam.of.interest$variable),levels=subset.dev$V1)
+
+one <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.dev.fam.of.interest,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),axis.text = element_text(size=20), axis.text.x=element_blank())+ scale_fill_brewer(palette="Set2")
+
+fam.of.interest <- "RLX03769"
+dev.fam.of.interest <- subset(elements.subset2,grepl(fam.of.interest,rownames(elements.subset2)))
+dev.fam.of.interest.2 <- dev.fam.of.interest
+for(i in 1:ncol(dev.fam.of.interest)){
+  dev.fam.of.interest.2[,i] <- dev.fam.of.interest[,i] / sum(all.tefam[,colnames(dev.fam.of.interest)[i]]) * 1000000
+}
+dev.fam.of.interest.2$element <- rownames(dev.fam.of.interest.2)
+melt.dev.fam.of.interest <- melt(dev.fam.of.interest.2,id.vars="element")
+melt.dev.fam.of.interest$variable <- factor(paste(melt.dev.fam.of.interest$variable),levels=subset.dev$V1)
+
+three <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.dev.fam.of.interest,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),axis.text = element_text(size=20), axis.text.x=element_blank())+ scale_fill_brewer(palette="Set2")
+
+fam.of.interest <- "RLG00357"
+dev.fam.of.interest <- subset(elements.subset2,grepl(fam.of.interest,rownames(elements.subset2)))
+dev.fam.of.interest.2 <- dev.fam.of.interest
+for(i in 1:ncol(dev.fam.of.interest)){
+  dev.fam.of.interest.2[,i] <- dev.fam.of.interest[,i] / sum(all.tefam[,colnames(dev.fam.of.interest)[i]]) * 1000000
+}
+dev.fam.of.interest.2$element <- rownames(dev.fam.of.interest.2)
+melt.dev.fam.of.interest <- melt(dev.fam.of.interest.2,id.vars="element")
+melt.dev.fam.of.interest$variable <- factor(paste(melt.dev.fam.of.interest$variable),levels=subset.dev$V1)
+
+two <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.dev.fam.of.interest,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),axis.text = element_text(size=20), axis.text.x=element_blank()) + scale_fill_brewer(palette="Set2")
+
+s3b <- ggplot(prop.unique.subset2,aes(x=family,y=mean.prop.expressed,color=order2)) + geom_point(alpha = .3) + theme_classic()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),axis.text = element_text(size=20), axis.text.x=element_blank()) + scale_color_manual(values=c("darkorchid3","green","steelblue","hotpink")) + ylim(0,1)
+
+grid.arrange(s3b,one,two,three,ncol=1)
+```
+
+
+
+
+```{r}
+fTau <- function(x)
+{
+  if(all(!is.na(x)))
+  {
+    if(min(x, na.rm=TRUE) >= 0)
+    {
+      if(max(x)!=0)
+      {
+        x <- (1-(x/max(x)))
+        res <- sum(x, na.rm=TRUE)
+        res <- res/(length(x)-1)
+      } else {
+        res <- 0
+      }
+    } else {
+      res <- NA
+      print("Expression values have to be positive!")
+    } 
+  } else {
+    res <- NA
+    print("No data for this gene avalable.")
+  } 
+  return(res)
+}
+```
+
+```{r}
+mean.expressed.log2 <- log2(1+mean.expressed.RPM)
+# tau_out <- data.frame(matrix(NA,nrow=nrow(mean.expressed.log2),ncol=1))
+# rownames(tau_out) <- rownames(mean.expressed.log2)
+# names(tau_out) <- "tau"
+# 
+# tau_out$tau <- fTau(mean.expressed.log2)
+# 
+# for(i in 1:nrow(mean.expressed.log2)){
+#   tau_out[i,1] <- fTau(mean.expressed.log2[i,])
+# }
+# head(tau_out)
+# 
+# write.table(tau_out,file="TEfam_tau_out_development.txt",quote=F,sep="\t")
+tau_out <- read.table("TEfam_tau_out_development.txt",header=T,stringsAsFactors = F)
+plot(density(tau_out[!is.na(tau_out$tau),1]),main="Density of Tau for TE Expression")
+```
+
+Gene tau
+```{r}
+mean.expressed.log2.genes <- log2(1+mean.expressed.RPM.genes)
+# tau_out.genes <- data.frame(matrix(NA,nrow=nrow(mean.expressed.log2.genes),ncol=1))
+# rownames(tau_out.genes) <- rownames(mean.expressed.log2.genes)
+# names(tau_out.genes) <- "tau"
+# 
+# for(i in 1:nrow(mean.expressed.log2.genes)){
+#   tau_out.genes[i,1] <- fTau(mean.expressed.log2.genes[i,])
+# }
+# head(tau_out.genes)
+# 
+# write.table(tau_out.genes,file="gene_tau_out_development.txt",quote=F,sep="\t")
+tau_out.genes <- read.table("gene_tau_out_development.txt",header=T,stringsAsFactors = F)
+plot(density(tau_out.genes[!is.na(tau_out.genes$tau),1]),main="Density of Tau for gene Expression")
+```
+
+```{r}
+tau_both <- rbind(tau_out[,1,drop=F],tau_out.genes[,1,drop=F])
+tau_both$group <- factor(ifelse(grepl("Zm",rownames(tau_both)),"Genes",ifelse(grepl("DH",rownames(tau_both)),"Helitron",ifelse(grepl("DT",rownames(tau_both)),"TIR",ifelse(grepl("RL",rownames(tau_both)),"LTR","LINES.SINES")))),levels=c("Genes","LTR","TIR","Helitron","LINES.SINES"))
+tau_both$order <- substr(rownames(tau_both),0,2)
+
+ggplot(subset(tau_both,tau_both$group != "LINES.SINES"),aes(tau,fill=group)) + geom_density() + theme_classic() + facet_grid(group~.) + scale_fill_manual(values=c("black","darkorchid3","green","steelblue","pink"))
+```
+
+```{r}
+expressed.famsize.tau <- merge(tau_both[,"tau",drop=F],B73.family.attributes,by.x="row.names",by.y="family",all=F)
+names(expressed.famsize.tau) <- c("family","tau","members","superfam","order","fam.size")
+expressed.famsize.tau2 <- subset(expressed.famsize.tau,expressed.famsize.tau$order %in% c("RL","DT","DH"))
+expressed.famsize.tau2$order <- factor(expressed.famsize.tau2$order,levels=c("RL","DT","DH"))
+
+ggplot(expressed.famsize.tau2,aes(x=tau,y=fam.size,fill=order)) + geom_density_ridges()  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("darkorchid3","green","steelblue"))
+
+a <- ggplot(subset(expressed.famsize.tau2,expressed.famsize.tau2$order == "RL"),aes(x=tau,y=fam.size,fill=order)) + geom_density_ridges()  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("darkorchid3"))
+b <- ggplot(subset(expressed.famsize.tau2,expressed.famsize.tau2$order == "DT"),aes(x=tau,y=fam.size,fill=order)) + geom_density_ridges()  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("green"))
+c <- ggplot(subset(expressed.famsize.tau2,expressed.famsize.tau2$order == "DH"),aes(x=tau,y=fam.size,fill=order)) + geom_density_ridges()  + theme_classic() + facet_grid(order~.) + scale_fill_manual(values=c("steelblue"))
+
+grid.arrange(a,b,c,nrow=1)
+```
+
+
+```{r}
+
+tau_out$max.expression <- rowMaxs(as.matrix(mean.expressed.log2))
+
+tau_out$order <- substr(rownames(tau_out),0,2)
+
+```
+
+
+NAM
+```{r}
+nam.rpm <- all.tefam.rpm.TEtable[,grepl("NL",colnames(all.tefam.rpm.TEtable))]
+expressed.nam.rpm <- subset(nam.rpm,rowSums(nam.rpm>=1)>=3)
+expressed.nam.binary <- expressed.nam.rpm
+expressed.nam.binary[expressed.nam.rpm >= 1] <- 1
+expressed.nam.binary[expressed.nam.rpm < 1] <- 0
+
+nam.samples <- subset(keep.samples,keep.samples$experiment == "NL")
+
+pheatmap(log2(1+expressed.nam.rpm),border_color = NA)
+pheatmap(expressed.nam.binary,border_color = NA,color = c("azure","red"))
+```
+
+```{r}
+expressed.nam.log2 <- log2(1+expressed.nam.rpm)
+
+transpose_nam <- t(as.matrix(expressed.nam.log2))
+pc.nam <- prcomp(transpose_nam)
+pca.sum.nam <- summary(prcomp(transpose_nam))
+pca.sum2.nam <- pca.sum.nam$importance
+pca1.nam <-  data.frame(pc.nam$x[,1:2])
+pca1.nam$names <- rownames(pca1.nam)
+pca1.nam <- separate(pca1.nam,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+
+ggplot(pca1.nam,aes(PC1,PC2,color=factor(pca1.nam$genotype),shape=factor(pca1.nam$tissue))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "genotype",shape = "tissue") + xlab(paste("PC1: ",pca.sum.nam$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.nam$importance[2,2] * 100,"%",collapse = ""))
+```
+Use PCAs to pick a tissue for NAM
+```{r}
+nam.ear <- subset(nam.samples,nam.samples$tissue == "ear")
+nam.ear.rpm <- expressed.nam.rpm[rowSums(expressed.nam.rpm[,colnames(expressed.nam.rpm) %in% nam.ear$colname] >= 1) >= 1,colnames(expressed.nam.rpm) %in% nam.ear$colname]
+
+nam.meristem <- subset(nam.samples,nam.samples$tissue == "meristem")
+nam.meristem2 <- data.frame(matrix(NA,nrow=nrow(expressed.nam.rpm),ncol = length(unique(nam.meristem$genotype))))
+rownames(nam.meristem2) <- rownames(expressed.nam.rpm)
+colnames(nam.meristem2) <- paste("meristem_NAM.SAM_NL_",unique(nam.meristem$genotype),sep="")
+
+for(i in 1:ncol(nam.meristem2)){
+  nam.meristem2[,i] <- rowMeans(expressed.nam.rpm[,grepl(colnames(nam.meristem2)[i],colnames(expressed.nam.rpm)),drop=F])
+}
+
+nam.meristem.rpm <- nam.meristem2[rowSums(nam.meristem2 >= 1) >= 1,] 
+nam.root <- subset(nam.samples,nam.samples$tissue == "root")
+nam.root.rpm <- expressed.nam.rpm[rowSums(expressed.nam.rpm[,colnames(expressed.nam.rpm) %in% nam.root$colname] >= 1) >= 1,colnames(expressed.nam.rpm) %in% nam.root$colname]
+
+nam.shoot <- subset(nam.samples,nam.samples$tissue == "shoot")
+nam.shoot.rpm <- expressed.nam.rpm[rowSums(expressed.nam.rpm[,colnames(expressed.nam.rpm) %in% nam.shoot$colname] >= 1) >= 1,colnames(expressed.nam.rpm) %in% nam.shoot$colname]
+transpose_nam.shoot <- t(as.matrix(log2(1+nam.shoot.rpm)))
+pc.nam.shoot <- prcomp(transpose_nam.shoot)
+pca.sum.nam.shoot <- summary(prcomp(transpose_nam.shoot))
+pca.sum2.nam.shoot <- pca.sum.nam.shoot$importance
+pca1.nam.shoot <-  data.frame(pc.nam.shoot$x[,1:2])
+pca1.nam.shoot$names <- rownames(pca1.nam.shoot)
+pca1.nam.shoot <- separate(pca1.nam.shoot,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+ggplot(pca1.nam.shoot,aes(PC1,PC2,color=factor(pca1.nam.shoot$genotype),shape=factor(pca1.nam.shoot$tissue))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "genotype",shape = "tissue") + xlab(paste("PC1: ",pca.sum.nam.shoot$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.nam.shoot$importance[2,2] * 100,"%",collapse = ""))
+
+nam.tassel <- subset(nam.samples,nam.samples$tissue == "tassel")
+nam.tassel.rpm <- expressed.nam.rpm[rowSums(expressed.nam.rpm[,colnames(expressed.nam.rpm) %in% nam.tassel$colname] >= 1) >= 1,colnames(expressed.nam.rpm) %in% nam.tassel$colname]
+```
+
+Look at breakdown before deciding categories
+```{r}
+nam.list <- c("nam.ear.rpm","nam.meristem.rpm","nam.root.rpm","nam.shoot.rpm","nam.tassel.rpm")
+
+nam.expressed.summary <- data.frame(matrix(NA,nrow=0,ncol = 4))
+names(nam.expressed.summary) <- c("total.n.expressed" ,"B.expressed"  ,     "Freq","tissue" )
+
+for(i in 1:5){
+  tmp <- get(nam.list[i])
+  tmp$total.n.expressed <- rowSums(tmp >=1)
+  tmp$B.expressed <- rowSums(tmp[,grep("B73",colnames(tmp)),drop=F] >= 1) == ncol(tmp[,grep("B73",colnames(tmp)),drop=F])
+  tmp2 <- data.frame(table(tmp[,c("total.n.expressed","B.expressed")]))
+  tmp2$tissue <- nam.list[i]
+  nam.expressed.summary <- rbind(nam.expressed.summary,tmp2)
+}
+
+ggplot(nam.expressed.summary,aes(y=Freq,x=total.n.expressed,fill=B.expressed)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_fill_brewer(palette="Dark2") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(B.expressed~tissue,scales = "free")
+
+plot.b <- ggplot(nam.expressed.summary,aes(y=Freq,x=total.n.expressed,fill=B.expressed)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_fill_brewer(palette="Dark2") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(B.expressed~tissue,scales = "free")
+```
+
+
+Number of TE families with expression in the following categories:
+B73 + most (rowSums >= 20)
+B73 + some (rowSums >= 10 & < 20)
+B73 + few (rowSums < 10)
+notB73 + most (rowSums >= 20)
+notB73 + some (rowSums >= 10 & < 20)
+notB73 + few (rowSums < 10)
+```{r}
+nam.expressed.summary$total.n.expressed <- as.numeric(nam.expressed.summary$total.n.expressed)
+nam.expressed.summary$B.expressed <- as.logical(nam.expressed.summary$B.expressed)
+nam.expressed.summary$six.categories <- ifelse(nam.expressed.summary$B.expressed & nam.expressed.summary$total.n.expressed >= 20,"B73+most",
+                                               ifelse(nam.expressed.summary$B.expressed & nam.expressed.summary$total.n.expressed < 5, "B73+few",
+                                                      ifelse(nam.expressed.summary$B.expressed,"B73+some",
+                                                             ifelse(nam.expressed.summary$total.n.expressed >= 20, "most.notB73",
+                                                                    ifelse(nam.expressed.summary$total.n.expressed < 5, "few.notB73","some.notB73")))))
+nam.expressed.summary$six.categories <- factor(nam.expressed.summary$six.categories,levels=rev(c("B73+most","B73+some","B73+few","most.notB73","some.notB73","few.notB73")))
+nam.expressed.summary2 <- data.frame(nam.expressed.summary %>% group_by(tissue,six.categories) %>% dplyr::summarize(TE.families = sum(Freq)))
+
+
+ggplot(nam.expressed.summary2,aes(y=TE.families,x=tissue,fill=six.categories)) + geom_bar(stat="identity",position = position_fill())  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + scale_fill_brewer(palette = "GnBu") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+ggplot(nam.expressed.summary2,aes(y=TE.families,x=tissue,fill=six.categories)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + scale_fill_brewer(palette = "RdGy") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+plot.c <- ggplot(nam.expressed.summary2,aes(y=TE.families,x=tissue,fill=six.categories)) + geom_bar(stat="identity")  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + scale_fill_brewer(palette = "RdGy") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+```
+
+Calculate some numbers
+```{r}
+sum(subset(nam.expressed.summary,grepl("few",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[1])[,"Freq"])/sum(subset(nam.expressed.summary,nam.expressed.summary$tissue == nam.list[1])[,"Freq"]) * 100
+sum(subset(nam.expressed.summary,grepl("few",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[2])[,"Freq"])/sum(subset(nam.expressed.summary,nam.expressed.summary$tissue == nam.list[2])[,"Freq"]) * 100
+sum(subset(nam.expressed.summary,grepl("few",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[3])[,"Freq"])/sum(subset(nam.expressed.summary,nam.expressed.summary$tissue == nam.list[3])[,"Freq"]) * 100
+sum(subset(nam.expressed.summary,grepl("few",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[4])[,"Freq"])/sum(subset(nam.expressed.summary,nam.expressed.summary$tissue == nam.list[4])[,"Freq"]) * 100
+sum(subset(nam.expressed.summary,grepl("few",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[5])[,"Freq"])/sum(subset(nam.expressed.summary,nam.expressed.summary$tissue == nam.list[5])[,"Freq"]) * 100
+
+sum(subset(nam.expressed.summary,grepl("few.notB73",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[1])[,"Freq"])
+sum(subset(nam.expressed.summary,grepl("few.notB73",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[2])[,"Freq"])
+sum(subset(nam.expressed.summary,grepl("few.notB73",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[3])[,"Freq"])
+sum(subset(nam.expressed.summary,grepl("few.notB73",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[4])[,"Freq"])
+sum(subset(nam.expressed.summary,grepl("few.notB73",nam.expressed.summary$six.categories) & nam.expressed.summary$tissue == nam.list[5])[,"Freq"])
+```
+
+
+
+```{r}
+fams.per.geno.tissue <- data.frame(matrix(NA,nrow=0,ncol=3))
+names(fams.per.geno.tissue) <- c("Freq","nam.list","library")
+
+for(i in 1:length(nam.list)){
+  tmp <- get(nam.list[i])
+  tmp2 <- data.frame(cbind(colSums(tmp >= 1), nam.list[i],colnames(tmp)))
+  names(tmp2) <- c("Freq","nam.list","library")
+  if(i == 2){
+    tmp2$library <- paste(tmp2$library,"1",sep="_")
+  }
+  fams.per.geno.tissue <- rbind(fams.per.geno.tissue,tmp2)
+}
+fams.per.geno.tissue$Freq <- as.numeric(paste(fams.per.geno.tissue$Freq))
+fams.per.geno.tissue <- separate(fams.per.geno.tissue,library,c("tissue","nam","experiment","genotype","rep"),sep="_")
+fams.per.geno.tissue$genotype.group <- ifelse(fams.per.geno.tissue$genotype == "B73","B73","other")
+
+ggplot(fams.per.geno.tissue,aes(y=Freq,x=genotype,fill=genotype.group)) + geom_bar(stat="identity",position=position_dodge())  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + scale_fill_brewer(palette = "Set1") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_wrap(.~tissue,nrow=1)
+
+plot.a <- ggplot(fams.per.geno.tissue,aes(y=Freq,x=genotype,fill=genotype.group)) + geom_bar(stat="identity",position=position_dodge())  + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + scale_fill_brewer(palette = "Set1") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_wrap(.~tissue,nrow=1)
+```
+
+```{r}
+grid.arrange(plot.a,plot.b,plot.c,ncol=1)
+```
+
+
+```{r}
+pheatmap(expressed.nam.binary[rownames(expressed.nam.log2) %in% rownames(get("pollen.anther")),],border_color = NA,color = c("azure","red"))
+pheatmap(expressed.nam.binary[rownames(expressed.nam.log2) %in% rownames(get("leaf")),],border_color = NA,color = c("azure","red"))
+pheatmap(expressed.nam.binary[rownames(expressed.nam.log2) %in% rownames(get("root")),],border_color = NA,color = c("azure","red"))
+pheatmap(expressed.nam.binary[rownames(expressed.nam.log2) %in% rownames(get("early.endosperm")),],border_color = NA,color = c("azure","red"))
+```
+
+```{r}
+not.B <- subset(expressed.nam.binary,rowSums(expressed.nam.binary[,grepl("B73",colnames(expressed.nam.binary))]>=1)==0 & rowSums(expressed.nam.binary) >= 100)
+pheatmap(not.B,border_color = NA,color = c("azure","red"))
+```
+
+```{r}
+only.B <- subset(expressed.nam.binary,rowSums(expressed.nam.binary[,grepl("B73",colnames(expressed.nam.binary))]>=1)>=3 & rowSums(expressed.nam.binary[,!grepl("B73",colnames(expressed.nam.binary))]>=1)==0)
+pheatmap(only.B,border_color = NA,color = c("azure","red"))
+```
+
+
+IBM RIL
+```{r}
+ril.rpm <- all.tefam.rpm.TEtable[,grepl("GL",colnames(all.tefam.rpm.TEtable))]
+expressed.ril.rpm <- subset(ril.rpm,rowSums(ril.rpm>=1)>=3)
+expressed.ril.binary <- expressed.ril.rpm
+expressed.ril.binary[expressed.ril.rpm >= 1] <- 1
+expressed.ril.binary[expressed.ril.rpm < 1] <- 0
+
+ril.samples <- subset(keep.samples,keep.samples$experiment == "GL")
+
+#pheatmap(log2(1+expressed.ril.rpm),border_color = NA)
+#pheatmap(expressed.ril.binary,border_color = NA,color = c("azure","red"))
+```
+
+```{r}
+ril.subset <- subset(expressed.ril.binary,(rowSums(expressed.ril.binary[,1:2]) == 2 | rowSums(expressed.ril.binary[,3:4]) == 2) & rowSums(expressed.ril.binary[,1:4]) == 2)
+```
+
+Call DE for colunms 1:4
+```{r}
+ibm_parents <- colnames(expressed.ril.binary)[1:4]
+ibm.counts <- all.tefam[rownames(all.tefam) != "Gene",ibm_parents]
+ibm.counts.keep <- ibm.counts[rownames(all.tefam.rpm.TEtable)[rowSums(all.tefam.rpm.TEtable[,ibm_parents] >= 1) > 1],]
+
+sample.info <- as.data.frame(cbind(paste(ibm_parents),c("B73","B73","Mo17","Mo17")))
+rownames(sample.info) <- sample.info[,1]
+sample_list <- sample.info[,2]
+names(sample.info) <- c("sample.info","sample_list")
+
+ddsFullCountTable <- DESeqDataSetFromMatrix(countData = ibm.counts.keep,
+                                            colData = sample.info, design = ~ sample_list)
+ddsFullCountTable <- estimateSizeFactors(ddsFullCountTable)
+deseq <- DESeq(ddsFullCountTable)
+rld <- rlog(deseq, blind=FALSE)
+plotPCA(rld,intgroup = "sample_list",ntop = 10000)
+```
+
+Create table of DE results
+```{r}
+res <- results(deseq,pAdjustMethod = "fdr")
+out <- as.data.frame(res)
+out$is.de <- ifelse(out$padj < .05 & out$log2FoldChange > 1 , "Mo17_higher", ifelse(out$padj < .05 & out$log2FoldChange < -1 , "B73_higher", 0))
+table(out$is.de)
+out$fc_category <- ifelse(abs(out$log2FoldChange) < 1, "not.DE",ifelse(abs(out$log2FoldChange) < 2, "1-2",ifelse(abs(out$log2FoldChange) < 3, "2-3",ifelse(abs(out$log2FoldChange) < 4, "3-4","4+"))))
+out.RIL <- out
+
+B.IBM <- rownames(subset(out,out$is.de == "B73_higher"))
+M.IBM <- rownames(subset(out,out$is.de == "Mo17_higher"))
+B.only <- rownames(subset(expressed.ril.rpm,rowSums(expressed.ril.rpm[,grepl("_M_",colnames(expressed.ril.rpm))] == 0) == 2 & rownames(expressed.ril.rpm) %in% B.IBM))
+M.only <- rownames(subset(expressed.ril.rpm,rowSums(expressed.ril.rpm[,grepl("_B_",colnames(expressed.ril.rpm))] == 0) == 2 & rownames(expressed.ril.rpm) %in% M.IBM))
+RIL.fams <- data.frame(matrix(NA,nrow=nrow(out),ncol=3))
+names(RIL.fams) <- c("family","DE.category","log2FoldChange")
+RIL.fams$family <- rownames(out)
+RIL.fams$log2FoldChange <- out$log2FoldChange
+RIL.fams$DE.category <- ifelse(RIL.fams$family %in% B.only,"B.only",
+                               ifelse(RIL.fams$family %in% M.only,"M.only",
+                                      ifelse(RIL.fams$family %in% B.IBM,"up.B",
+                                             ifelse(RIL.fams$family %in% M.IBM,"up.M","notDE"))))
+table(RIL.fams$DE.category)
+```
+
+```{r}
+pheatmap(log2(1+expressed.ril.rpm[rownames(expressed.ril.rpm) %in% c(B.IBM,M.IBM),1:4])/rowMaxs(as.matrix(log2(1+expressed.ril.rpm[rownames(expressed.ril.rpm) %in% c(B.IBM,M.IBM),1:4]))),border_color = NA)
+pheatmap(log2(1+expressed.ril.rpm[rownames(out)[order(out$is.de)],1:4]),border_color = NA,cluster_rows = F,gaps_row = c(sum(out$is.de == 0),sum(sum(out$is.de == 0),sum(out$is.de == "B73_higher"))))
+```
+
+
+Mean per genotype 
+```{r}
+ril.genos <- unique(ril.samples$genotype)
+ril.colnames <- unique(substr(ril.samples$colname,0,nchar(ril.samples$colname)-1))
+
+ril.mean.rpm <- data.frame(matrix(NA,nrow=nrow(expressed.ril.rpm),ncol=length(ril.genos)))
+rownames(ril.mean.rpm) <- rownames(expressed.ril.rpm)
+colnames(ril.mean.rpm) <- ril.genos
+
+for(i in 1:length(ril.colnames)){
+  ril.mean.rpm[,i] <- rowMeans(expressed.ril.rpm[,grep(ril.colnames[i],colnames(expressed.ril.rpm))])
+}
+```
+
+```{r}
+baby.goat <- colorRampPalette(c("darkmagenta","darkblue","blue","cyan","white","lightsalmon","red","red4","coral4"))
+breaksList = seq(-13,13,by=0.1)
+```
+
+
+```{r}
+ril.mean.de <- subset(ril.mean.rpm,rownames(ril.mean.rpm) %in% c(B.IBM,M.IBM))
+ril.de.DA <- ril.mean.de
+
+ril.de.DA$high.parent <- rowMaxs(as.matrix(ril.mean.de[,1:2]))
+ril.de.DA$low.parent <- rowMins(as.matrix(ril.mean.de[,1:2]))
+ril.de.DA$mid.parent <- rowMeans(ril.de.DA[,c("high.parent","low.parent")])
+
+for(i in 3:107){
+  ril.de.DA[,i] <- (ril.mean.de[,i] - ril.de.DA$mid.parent)/(ril.de.DA$high.parent - ril.de.DA$mid.parent)
+}
+
+ril.de.DA <- ril.de.DA[,3:107]
+
+ril.de.DA2 <- ril.de.DA
+ril.de.DA2[ril.de.DA>3] <- 3
+ril.de.DA2[ril.de.DA < -3] <- -3
+```
+
+```{r}
+check.DEcat <- merge(ril.de.DA,out[,"fc_category",drop=F],by="row.names",all=F)
+rownames(check.DEcat) <- check.DEcat$Row.names
+
+melt.de.ril <- melt(check.DEcat,id.vars = c("fc_category","Row.names"))
+melt.de.ril$direction <- ifelse(melt.de.ril$Row.names %in% B.IBM, "B73","Mo17")
+```
+
+```{r}
+ril.de.DA$abs.mean <- rowMeans(abs(ril.de.DA))
+```
+
+
+Use TE polymorphism tables to make B vs Mo tables that are useful here
+Run file TE_polymorphism_V2.Rmd first
+```{r}
+BM.comparison <- read.table("polymorphism_data_B73vsMo17_for_IBM.RIL.txt",header=T,stringsAsFactors = F)
+BM.fam.var2 <- read.table("polymorphism_data_B73vsMo17_families_for_IBM.RIL.txt",header=T,stringsAsFactors = F)
+```
+
+```{r}
+BM.fam.var2$log2.BoverM <- log2(BM.fam.var2$annotated.in.B73/BM.fam.var2$annotated.in.Mo17)
+plot(BM.fam.var2$log2.BoverM,BM.fam.var2$B.variable)
+hist(BM.fam.var2$log2.BoverM,breaks=50)
+```
+
+```{r}
+de.vs.famsize <- merge(RIL.fams,BM.fam.var2,by="family",all=F)
+de.vs.famsize$bigger.fam <- ifelse(de.vs.famsize$B73 > de.vs.famsize$Mo17,"B.bigger",ifelse(de.vs.famsize$B73 < de.vs.famsize$Mo17, "M.bigger","same.size"))
+data.frame(table(de.vs.famsize[,c("DE.category","bigger.fam")]))
+```
+
+Find subset of TE families that are shared but DE
+```{r}
+shared.de <- subset(de.vs.famsize,de.vs.famsize$DE.category != "notDE" & de.vs.famsize$B.variable == 0 & de.vs.famsize$M.variable == 0 & de.vs.famsize$family %in% rownames(ril.mean.rpm))
+nrow(shared.de)
+table(shared.de$DE.category)
+table(substr(shared.de$family,0,2))
+table(shared.de$B73)
+```
+
+
+
+Plot the variation in family size vs variation in expression
+```{r}
+size.v.exp <- merge(BM.fam.var2[,1:5],ril.mean.rpm[,1:2],by.x="family",by.y="row.names",all=F)
+
+size.v.exp$log2.B <- log2(1+size.v.exp$B)
+size.v.exp$log2.M <- log2(1+size.v.exp$M)
+
+size.v.exp$copy.ratio <- (size.v.exp$B73 - size.v.exp$Mo17)/size.v.exp$B73
+size.v.exp$expression.ratio <- (size.v.exp$B - size.v.exp$M)/size.v.exp$B
+size.v.exp$order <- substr(size.v.exp$family,0,2)
+
+
+size.v.exp2 <- subset(size.v.exp,size.v.exp$order %in% c("RL","DT","DH") & size.v.exp$family %in% subset(de.vs.famsize,de.vs.famsize$DE.category != "notDE")[,"family"])
+
+size.v.exp3 <- subset(size.v.exp,size.v.exp$order %in% c("RL","DT","DH") & size.v.exp$family %in% subset(de.vs.famsize,de.vs.famsize$DE.category == "up.B" | de.vs.famsize$DE.category == "B.only")[,"family"])
+
+size.v.exp2v2 <- merge(size.v.exp2,RIL.fams,by="family",all=F)
+size.v.exp2v2$log2FC <- size.v.exp2v2$log2FoldChange * -1
+
+ggplot(size.v.exp2v2,aes(x=copy.ratio,y=log2FC,color=order,shape=order)) + geom_point() + theme_classic() + facet_wrap(.~order,scales="free_x") + geom_vline(xintercept = 0,alpha = 0.3) + geom_hline(yintercept = 0,alpha = 0.3)
+```
+
+prop.unique.all
+
+Plot the proportion of reads from the top expressed member in B73 vs the percent of RILs with expression (for expressed in B only)
+```{r}
+element.B.ril <- data.frame(rowSums(RIL.elements2[,1:2]))
+names(element.B.ril) <- "element.counts"
+element.B.ril$family <- substr(rownames(element.B.ril),0,8)
+
+top.element.ril <- data.frame(element.B.ril %>% group_by(family) %>% dplyr::summarize(max.expressed = max(element.counts),expressed.elements = n(),all.counts = sum(element.counts)))
+top.element.ril$percent.top.member <- top.element.ril$max.expressed/top.element.ril$all.counts * 100
+top.element.ril$RILs.expressed <- rowSums(ril.mean.rpm[top.element.ril$family,3:107] >= 1)/ncol(ril.mean.rpm[,3:107]) * 100
+top.element.ril$order <- substr(top.element.ril$family,0,2)
+
+top.element.ril.Bonly <- subset(top.element.ril,top.element.ril$family %in% subset(de.vs.famsize,de.vs.famsize$DE.category == "B.only" & de.vs.famsize$B73 > 1)[,"family"])
+
+ggplot(top.element.ril.Bonly,aes(x=RILs.expressed,y=percent.top.member)) + geom_bin2d() + theme_classic() + scale_fill_viridis_c(option = "inferno")
+ggplot(top.element.ril.Bonly,aes(x=RILs.expressed,y=percent.top.member)) + geom_point() + theme_classic() + geom_smooth(method=lm, se=FALSE, fullrange=TRUE) + xlim(0,100) + ylim(0,100)
+
+hist(top.element.ril.Bonly$RILs.expressed,breaks=10,col="black",xlim = c(0,100),ylim = c(0,14),xlab="Percent of RILs Expressed",main = "B73-specific families")
+ggplot(top.element.ril.Bonly,aes(x=RILs.expressed)) + geom_histogram(binwidth = 7)  + theme_classic() + xlim(0,100) + ylim(0,8)
+```
+
+```{r}
+top.element.ril2 <- data.frame(element.B.ril %>% group_by(family) %>% dplyr::summarize(max.expressed = max(element.counts),expressed.elements = n()))
+top.element.ril2$percent.top.member <- top.element.ril$max.expressed / rowSums(all.tefam[top.element.ril$family,names(RIL.elements2[,1:2])]) * 100
+top.element.ril2$RILs.expressed <- rowSums(ril.mean.rpm[top.element.ril2$family,3:107] >= 1)/ncol(ril.mean.rpm[,3:107]) * 100
+top.element.ril2$order <- substr(top.element.ril2$family,0,2)
+
+top.element.ril.Bonly2 <- subset(top.element.ril2,top.element.ril2$family %in% subset(de.vs.famsize,de.vs.famsize$DE.category == "B.only")[,"family"])
+
+ggplot(top.element.ril.Bonly2,aes(x=RILs.expressed,y=percent.top.member)) + geom_point() + theme_classic() + geom_smooth(method=lm, se=FALSE, fullrange=TRUE)
+```
+
+
+Element in common expressed in one
+```{r}
+size.v.exp2 <- merge(size.v.exp,de.vs.famsize[,1:2],by="family",all=F)
+common.de <- subset(size.v.exp2,size.v.exp2$B73 == size.v.exp2$Mo17 & size.v.exp2$BgoneM == size.v.exp2$MgoneB & size.v.exp2$BgoneM == 0 & (size.v.exp2$DE.category == "B.only" | size.v.exp2$DE.category == "M.only"))
+```
+
+
+```{r}
+B73.only <- subset(BM.fam.var2,BM.fam.var2$B.variable == 1 & BM.fam.var2$annotated.in.Mo17 == 0)
+B73.only.multi.copy <- subset(B73.only,B73.only$annotated.in.B73 > 1)
+B73.only.single.copy <- subset(B73.only,B73.only$annotated.in.B73 == 1)
+```
+
+```{r}
+B.only.DE.RIL <- subset(ril.mean.rpm,rownames(ril.mean.rpm) %in% B.IBM & rownames(ril.mean.rpm) %in% B73.only.multi.copy$family)
+
+B73.only[B73.only$family %in% rownames(B.only.DE.RIL),]
+
+pheatmap(log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% rownames(B.only.DE.RIL),]),border_color = NA,cluster_cols = F)
+
+
+pheatmap(ril.de.DA2[rownames(ril.de.DA2) %in% rownames(B.only.DE.RIL),],border_color = NA)
+
+```
+
+DE TE families only present in B73 (with at least 2 members in B73)
+```{r}
+B.only.2 <- ril.de.DA2[rownames(ril.de.DA2) %in% rownames(B.only.DE.RIL),]
+B.only.2$family <- rownames(B.only.2)
+melt.DA.subset <- melt(B.only.2)
+
+tmp2 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% rownames(B.only.DE.RIL),3:107])
+tmp2$family <- rownames(tmp2)
+melt.log2RPM.subset <- melt(tmp2)
+
+tmp3 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% rownames(B.only.DE.RIL),1:2])
+tmp3$family <- rownames(tmp3)
+melt.log2RPM.BM <- melt(tmp3)
+
+ggplot(melt.log2RPM.subset,aes(x=family,y=value,fill=family)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_wrap(~family,nrow=3,scales="free") + geom_point(data = melt.log2RPM.BM, aes(x = family, y = value, shape = variable),color="black")
+```
+
+Try classifying every value as B-like or M-like and calculating a ratio
+```{r}
+b.or.m.like <- log2(1+B.only.DE.RIL)
+for(i in 3:107){
+  b.or.m.like[,i] <- ifelse(abs(B.only.DE.RIL[,i] - B.only.DE.RIL[,"B"]) < abs(B.only.DE.RIL[,i] - B.only.DE.RIL[,"M"]),"B.like","M.like")
+}
+for(i in 1:nrow(b.or.m.like)){
+  tmp <- chisq.test(c(sum(b.or.m.like[i,3:107] == "B.like"),sum(b.or.m.like[i,3:107] == "M.like")),p = c(.5,.5))
+  b.or.m.like[i,"chisq.pval.50"] <- tmp$p.value
+  
+  tmp2 <- chisq.test(c(sum(b.or.m.like[i,3:107] == "B.like"),sum(b.or.m.like[i,3:107] == "M.like")),p = c(.25,.75))
+  b.or.m.like[i,"chisq.pval.25"] <- tmp2$p.value
+  
+  tmp3 <- chisq.test(c(sum(b.or.m.like[i,3:107] == "B.like"),sum(b.or.m.like[i,3:107] == "M.like")),p = c(.75,.25))
+  b.or.m.like[i,"chisq.pval.75"] <- tmp3$p.value
+}
+
+b.or.m.like$prop.b.like <- rowSums(b.or.m.like[,3:107] == "B.like")/105
+
+b.or.m.like$sig.50 <- ifelse(b.or.m.like$chisq.pval.50 < .05, "reject","accept")
+b.or.m.like$sig.25 <- ifelse(b.or.m.like$chisq.pval.25 < .05, "reject","accept")
+b.or.m.like$sig.75 <- ifelse(b.or.m.like$chisq.pval.75 < .05, "reject","accept")
+
+b.or.m.like[,112:114]
+```
+
+
+Find compariable single-member families
+```{r}
+B.only.DE.RIL.single.member <- subset(ril.mean.rpm,rownames(ril.mean.rpm) %in% B.IBM & rownames(ril.mean.rpm) %in% B73.only.single.copy$family & ril.mean.rpm$M < .1 & ril.mean.rpm$B > 4)
+
+tmp4 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% rownames(B.only.DE.RIL.single.member),3:107])
+tmp4$family <- rownames(tmp4)
+melt.log2RPM.subset2 <- melt(tmp4)
+
+tmp5 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% rownames(B.only.DE.RIL.single.member),1:2])
+tmp5$family <- rownames(tmp5)
+melt.log2RPM.BM2 <- melt(tmp5)
+
+ggplot(melt.log2RPM.subset2,aes(x=family,y=value,fill=family)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_wrap(~family,nrow=3,scales="free") + geom_point(data = melt.log2RPM.BM2, aes(x = family, y = value, shape = variable),color="black")
+
+```
+
+
+Test for bimodality
+```{r}
+RIL.DE.log2 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% c(B.IBM,M.IBM),3:107])
+
+for(i in 1:nrow(RIL.DE.log2)){
+  RIL.DE.log2[i,"bimodality"] <- bimodality_coefficient(as.numeric(RIL.DE.log2[i,1:105]),finite = T)
+  RIL.DE.log2[i,"diptest"] <- dip(as.numeric(RIL.DE.log2[i,1:105]),min.is.0 = T)
+  RIL.DE.log2[i,"diptest.pval"] <- dip.test(as.numeric(RIL.DE.log2[i,1:105]),simulate.p.value = FALSE)["p.value"]
+}
+
+hist(RIL.DE.log2$bimodality,breaks=50)
+hist(RIL.DE.log2$diptest,breaks=50)
+hist(RIL.DE.log2$diptest.pval,breaks=50)
+
+bimodal.var.2 <- merge(BM.fam.var2,RIL.DE.log2[,c("bimodality","diptest","diptest.pval")],by.x="family",by.y="row.names",all=F)
+bimodal.var <- merge(BM.fam.var2,RIL.DE.log2[,c("bimodality","diptest","diptest.pval")],by.x="family",by.y="row.names",all=F)
+
+plot(bimodal.var.2$bimodality,bimodal.var.2$log2.BoverM)
+```
+Use diptest p-value
+```{r}
+bimodal.var.2$modality <- ifelse(bimodal.var.2$diptest.pval < 0.05, "multimodal","unimodal")
+modality.summary <- data.frame(table(bimodal.var.2$modality))
+names(modality.summary) <- c("modality","value")
+modality.summary$group <- "all"
+modality.summary$category <- "all"
+
+bimodal.var.2$more.members <- ifelse(bimodal.var.2$B73 > bimodal.var.2$Mo17, "B73",ifelse(bimodal.var.2$Mo17 > bimodal.var.2$B73,"Mo17","Same.Size"))
+bimodal.var2 <- merge(bimodal.var.2,RIL.fams,all=F)
+bimodal.var2$family.size.B <- factor(ifelse(bimodal.var2$B73 == 1, "single.member",
+                                               ifelse(bimodal.var2$B73 <= 30,"small",
+                                                      ifelse(bimodal.var2$B73 <= 500, "medium","large"))),levels=rev(c("single.member","small","medium","large")))
+
+a <- melt(table(bimodal.var2[,c("modality","more.members")]))
+names(a) <- c("modality","category","value")
+a$group <- "More.members"
+b <- melt(table(bimodal.var2[,c("modality","family.size.B")]))
+names(b) <- c("modality","category","value")
+b$group <- "Family.size.B73"
+c <- modality.summary[,c("modality","category","value","group")]
+d <- melt(table(bimodal.var2[,c("modality","DE.category")]))
+names(d) <- c("modality","category","value")
+d$group <- "DE_category"
+
+compare.subsets.bimodal <- data.frame(rbind(c,a,b,d))
+compare.subsets.bimodal$category <- factor(compare.subsets.bimodal$category,levels=c("all","single.member","small","medium","large","B73","Same.Size","Mo17","B.only","up.B","up.M","M.only"))
+
+ggplot() + geom_bar(aes(y=value,x=category,fill=modality),data=compare.subsets.bimodal,stat="identity") + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_grid(.~group,scales="free") + scale_fill_manual(values=c("lightblue","darkblue")) 
+ggplot() + geom_bar(aes(y=value,x=category,fill=modality),data=compare.subsets.bimodal,stat="identity",position = position_fill()) + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.text.x = element_text(angle=90, hjust=1)) + facet_grid(.~group,scales="free") + scale_fill_manual(values=c("lightblue","darkblue")) 
+#+ geom_text(aes(label=value),position=position_fill())
+```
+
+
+Not bimodal families (bimodality 5/9)
+```{r}
+BM.fam.var2[BM.fam.var2$family %in% rownames(RIL.DE.log2[RIL.DE.log2$bimodality < 5/9,]),]
+
+tmp4 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% (rownames(RIL.DE.log2[RIL.DE.log2$bimodality < .4,])),3:107])
+tmp4$family <- rownames(tmp4)
+melt.log2RPM.subset2 <- melt(tmp4)
+
+tmp5 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% (rownames(RIL.DE.log2[RIL.DE.log2$bimodality < .4,])),1:2])
+tmp5$family <- rownames(tmp5)
+melt.log2RPM.BM2 <- melt(tmp5)
+
+ggplot(melt.log2RPM.subset2,aes(x=family,y=value,fill=family)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_wrap(~family,nrow=3,scales="free") + geom_point(data = melt.log2RPM.BM2, aes(x = family, y = value, shape = variable),color="black")
+```
+
+```{r}
+BM.fam.var2[BM.fam.var2$family %in% rownames(RIL.DE.log2[RIL.DE.log2$bimodality > 1.05,]),]
+
+tmp4 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% (rownames(RIL.DE.log2[RIL.DE.log2$bimodality > 1.05,])),3:107])
+tmp4$family <- rownames(tmp4)
+melt.log2RPM.subset2 <- melt(tmp4)
+
+tmp5 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% (rownames(RIL.DE.log2[RIL.DE.log2$bimodality > 1.05,])),1:2])
+tmp5$family <- rownames(tmp5)
+melt.log2RPM.BM2 <- melt(tmp5)
+
+ggplot(melt.log2RPM.subset2,aes(x=family,y=value,fill=family)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_wrap(~family,nrow=3,scales="free") + geom_point(data = melt.log2RPM.BM2, aes(x = family, y = value, shape = variable),color="black")
+```
+
+Families I think about
+```{r}
+tmp4 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% c("RLG00010","RLG00376","RLG00237","RLG00106","RLG00091","RLG00043","RLC00083","DHH00032","DHH00015"),3:107])
+tmp4$family <- rownames(tmp4)
+melt.log2RPM.subset2 <- melt(tmp4)
+
+tmp5 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% c("RLG00010","RLG00376","RLG00237","RLG00106","RLG00091","RLG00043","RLC00083","DHH00032","DHH00015"),1:2])
+tmp5$family <- rownames(tmp5)
+melt.log2RPM.BM2 <- melt(tmp5)
+
+ggplot(melt.log2RPM.subset2,aes(x=family,y=value,fill=family)) + geom_violin() + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_wrap(~family,nrow=3,scales="free") + geom_point(data = melt.log2RPM.BM2, aes(x = family, y = value, shape = variable),color="black")
+```
+
+
+```{r}
+pheatmap(log2(1+expressed.ril.rpm[rownames(expressed.ril.rpm) %in% B73.only$family,1:4]),border_color = NA,cluster_rows = T)
+```
+
+```{r}
+bimodal.var$B.shared <- bimodal.var$B73 - bimodal.var$BgoneM
+bimodal.var$M.shared <- bimodal.var$Mo17 - bimodal.var$MgoneB
+bimodal.var$shared <- rowMaxs(as.matrix(bimodal.var[,c("B.shared","M.shared")]))
+```
+
+
+Violins ranked by bimodality (diptest)
+
+```{r}
+bimodality.plot <- function(family.list){
+tmp <- as.matrix(log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% family.list,]))
+tmp3 <- tmp / rowMaxs(tmp)
+
+tmp4 <- data.frame(tmp3[,3:107])
+tmp4$family <- rownames(tmp4)
+melt.log2RPM.subset2 <- melt(tmp4)
+
+tmp5 <- data.frame(tmp3[,1:2])
+tmp5$family <- rownames(tmp5)
+melt.log2RPM.BM2 <- melt(tmp5)
+
+plot.bimodality <- subset(bimodal.var,bimodal.var$family %in% family.list)
+plot.bimodality2 <- melt(plot.bimodality[,c("family","B.variable","annotated.in.B73","annotated.in.Mo17")],id.vars="family")
+plot.bimodality2$family <- factor(plot.bimodality2$family,levels=plot.bimodality[order(plot.bimodality$diptest),"family"])
+plot.bimodality2$group <- ifelse(plot.bimodality2$variable == "B.variable","B.variable","fam.size")
+
+a <- ggplot(plot.bimodality2,aes(x=family,y=value,shape=variable,color=variable)) + geom_point() + facet_grid(group~.,scales="free") + theme_classic()
+
+melt.log2RPM.subset2$family <- factor(melt.log2RPM.subset2$family,levels=plot.bimodality[order(plot.bimodality$diptest),"family"])
+melt.log2RPM.BM2$family <- factor(melt.log2RPM.BM2$family,levels=plot.bimodality[order(plot.bimodality$diptest),"family"])
+
+b <- ggplot(melt.log2RPM.subset2,aes(x=family,y=value)) + geom_violin() + theme_classic()   + geom_point(data = melt.log2RPM.BM2, aes(x = family, y = value, shape = variable),color="black") 
+
+return(grid.arrange(a,b,ncol=1))
+}
+
+bimodality.plot2 <- function(family.list){
+tmp <- as.matrix(log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% family.list,]))
+tmp3 <- tmp / rowMaxs(tmp)
+
+if(length(family.list) > 1){
+  tmp4 <- data.frame(tmp3[,3:107])
+  tmp4$family <- rownames(tmp4)
+  melt.log2RPM.subset2 <- melt(tmp4)
+
+  tmp5 <- data.frame(tmp3[,1:2])
+  tmp5$family <- rownames(tmp5)
+  melt.log2RPM.BM2 <- melt(tmp5)
+}
+if(length(family.list) == 1){
+  melt.log2RPM.subset2 <- data.frame(tmp3[,3:107])
+  melt.log2RPM.subset2$family <- family.list
+  melt.log2RPM.subset2$variable <- rownames(melt.log2RPM.subset2)
+  melt.log2RPM.subset2$value <- melt.log2RPM.subset2[,1]
+  
+  #melt.log2RPM.BM2 <- data.frame(tmp3[,1:2])
+  melt.log2RPM.BM2 <- data.frame(tmp3[,])
+  melt.log2RPM.BM2$family <- family.list
+  melt.log2RPM.BM2$variable <- rownames(melt.log2RPM.BM2)
+  melt.log2RPM.BM2$value <- melt.log2RPM.BM2[,1]
+}
+
+plot.bimodality <- subset(bimodal.var,bimodal.var$family %in% family.list)
+plot.bimodality2 <- melt(plot.bimodality[,c("family","shared","annotated.in.B73","annotated.in.Mo17")],id.vars="family")
+plot.bimodality2$family <- factor(plot.bimodality2$family,levels=plot.bimodality[order(plot.bimodality$diptest),"family"])
+plot.bimodality2$variable <- factor(plot.bimodality2$variable,levels=c("annotated.in.B73","annotated.in.Mo17","shared"))
+
+a <- ggplot(plot.bimodality2,aes(x=family,y=value,shape=variable,color=variable)) + geom_hline(yintercept = seq(0,max(plot.bimodality2$value),1),color="gray") + geom_point(position = position_jitter(width = .2,height = 0)) + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_color_manual(values=c("firebrick3","tan1","navy"))
+
+melt.log2RPM.subset2$family <- factor(melt.log2RPM.subset2$family,levels=plot.bimodality[order(plot.bimodality$diptest),"family"])
+melt.log2RPM.BM2$family <- factor(melt.log2RPM.BM2$family,levels=plot.bimodality[order(plot.bimodality$diptest),"family"])
+
+#b <- ggplot(melt.log2RPM.subset2,aes(x=family,y=value)) + geom_violin() + theme_classic()   + geom_point(data = melt.log2RPM.BM2, aes(x = family, y = value, shape = variable,color=variable)) + scale_color_manual(values=c("firebrick3","tan1"))
+b <- ggplot() + geom_jitter(data = melt.log2RPM.BM2, aes(x = family, y = value, color=variable)) + geom_violin(data = melt.log2RPM.subset2,aes(x=family,y=value),fill=NA) + theme_classic() + scale_color_manual(values=c("firebrick3","tan1",rep("gray",105))) + theme(legend.position="none")
+
+return(grid.arrange(a,b,ncol=1))
+}
+
+
+```
+
+
+```{r}
+exclude <- subset(bimodal.var,bimodal.var$annotated.in.B73 == 1 & bimodal.var$annotated.in.Mo17 == 0)[,"family"]
+b.only.bimodality <- B.only[!B.only %in% exclude]
+b.only.bimodality2 <- b.only.bimodality[b.only.bimodality %in% rownames(ril.mean.rpm[rowMeans(ril.mean.rpm[,1:2]) > 1,])]
+
+bimodality.plot(b.only.bimodality2)
+bimodality.plot2(b.only.bimodality2)
+```
+
+B only fams
+```{r}
+b.only.sinmem <- subset(bimodal.var,bimodal.var$annotated.in.B73 == 1 & bimodal.var$annotated.in.Mo17 == 0 & bimodal.var$shared == 0)[,"family"]
+  
+b.only.sinmem2 <- b.only.sinmem[b.only.sinmem %in% rownames(ril.mean.rpm[rowMeans(ril.mean.rpm[,1:2]) > 1,])]
+  
+bimodality.plot(b.only.sinmem2)
+bimodality.plot2(b.only.sinmem2)
+```
+
+
+Try for M higher than B
+```{r}
+m.only.bimodality <- M.only[!M.only %in% exclude]
+m.only.bimodality2 <- m.only.bimodality[m.only.bimodality %in% rownames(ril.mean.rpm[rowMeans(ril.mean.rpm[,3:4]) > 1,])]
+
+bimodality.plot(m.only.bimodality2)
+bimodality.plot2(m.only.bimodality2)
+```
+
+Look at big families 
+```{r}
+include <- bimodal.var[bimodal.var$annotated.in.B73 > 500,"family"]
+
+big.de.fam <- include[include %in% c(B.IBM,M.IBM)]
+
+bimodality.plot(big.de.fam)
+bimodality.plot2(big.de.fam)
+```
+
+```{r}
+bimodality.plot2(c("RLG05892"))
+bimodality.plot2(c("RLX01197"))
+bimodality.plot2(c("RLG01150"))
+```
+
+```{r}
+bimodality.plot2(shared.de[grepl("B",shared.de$DE.category),"family"])
+bimodality.plot2(shared.de[grepl("M.only",shared.de$DE.category),"family"])
+bimodality.plot2(shared.de[grepl("up.M",shared.de$DE.category),"family"])
+```
+
+
+```{r}
+RIL.RLG01150 <- subset(RIL.elements,grepl("RLG01150",rownames(RIL.elements)))
+RIL.RLG01150.2 <- RIL.RLG01150
+for(i in 1:ncol(RIL.RLG01150)){
+  RIL.RLG01150.2[,i] <- RIL.RLG01150[,i] / sum(all.tefam[,colnames(RIL.RLG01150)[i]]) * 1000000
+}
+RIL.RLG01150.2$element <- rownames(RIL.RLG01150.2)
+melt.RIL.RLG01150 <- melt(RIL.RLG01150.2,id.vars="element")
+melt.RIL.RLG01150$variable <- factor(melt.RIL.RLG01150$variable,levels=colnames(all.tefam.rpm)[order(all.tefam.rpm["RLG01150",])])
+c <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.RIL.RLG01150,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_fill_brewer(palette="Paired")
+c
+```
+
+
+DE RIL %unique
+```{r}
+RIL.DE.all <- ril.rpm[rownames(RIL.DE.log2),]
+RIL.DE.prop <- prop.unique.all[rownames(RIL.DE.log2),grepl("_GL_",colnames(prop.unique.all))]
+
+for(i in 1:nrow(bimodal.var)){
+  bimodal.var$prop.uniq.expressed[i] <- rowMeans(RIL.DE.prop[bimodal.var[i,"family"],ril.rpm[bimodal.var[i,"family"],]>=1])
+}
+
+ggplot(bimodal.var,aes(x=prop.uniq.expressed,y=B73)) + geom_bin2d() + theme_classic() 
+ggplot(bimodal.var,aes(x=prop.uniq.expressed,y=log2.BoverM)) + geom_bin2d() + theme_classic() 
+ggplot(bimodal.var,aes(x=prop.uniq.expressed,y=diptest)) + geom_bin2d() + theme_classic() + scale_fill_viridis_c(option = "inferno")
+```
+
+```{r}
+ggplot(bimodal.var,aes(x=log(annotated.in.B73),y=diptest)) + geom_bin2d() + theme_classic() + scale_fill_viridis_c(option = "inferno")
+cor.test(log(bimodal.var$annotated.in.B73),bimodal.var$diptest)
+```
+
+
+Figure out some subset to look at closer
+```{r}
+tmp <- subset(bimodal.var,bimodal.var$B.variable > .7 & bimodal.var$M.variable > .5 & bimodal.var$B73 > 1 & bimodal.var$Mo17 > 0)
+
+tmp4 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% tmp$family,3:107])
+tmp4$family <- rownames(tmp4)
+melt.log2RPM.subset2 <- melt(tmp4)
+
+tmp5 <- log2(1+ril.mean.rpm[rownames(ril.mean.rpm) %in% tmp$family,1:2])
+tmp5$family <- rownames(tmp5)
+melt.log2RPM.BM2 <- melt(tmp5)
+
+tmp
+```
+
+What if I just compare RLG01150 and RLG02710?
+```{r}
+prop.unique.2fam <- prop.unique.all[c("RLG01150","RLG02710"),grepl("_GL_",colnames(prop.unique.all))]
+rpm.2fam <- all.tefam.rpm[c("RLG01150","RLG02710"),grepl("_GL_",colnames(all.tefam.rpm))]
+unique.2 <- rpm.2fam * prop.unique.2fam
+unique.2$type <- "unique"
+unique.2$fam <- rownames(unique.2)
+multi.2 <- rpm.2fam * (1-prop.unique.2fam)
+multi.2$type <- "multi"
+multi.2$fam <- rownames(multi.2)
+
+both <- rbind(unique.2,multi.2)
+melt.both <- melt(both,id.vars = c("type","fam"))
+
+melt.both$variable <- factor(melt.both$variable,levels=colnames(rpm.2fam)[order(rpm.2fam["RLG01150",])])
+a <- ggplot() + geom_bar(aes(x=variable,y=value,fill=type),data=subset(melt.both,melt.both$fam == "RLG01150"),stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_grid(fam~.,scales="free_y") 
+
+melt.both$variable <- factor(melt.both$variable,levels=colnames(rpm.2fam)[order(rpm.2fam["RLG02710",])])
+b <- ggplot() + geom_bar(aes(x=variable,y=value,fill=type),data=subset(melt.both,melt.both$fam == "RLG02710"),stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_grid(fam~.,scales="free_y") 
+
+grid.arrange(a,b,ncol=1)
+```
+
+```{r}
+RIL.RLG01150 <- subset(RIL.elements,grepl("RLG01150",rownames(RIL.elements)))
+RIL.RLG01150.2 <- RIL.RLG01150
+for(i in 1:ncol(RIL.RLG01150)){
+  RIL.RLG01150.2[,i] <- RIL.RLG01150[,i] / sum(all.tefam[,colnames(RIL.RLG01150)[i]]) * 1000000
+}
+RIL.RLG01150.2$element <- rownames(RIL.RLG01150.2)
+melt.RIL.RLG01150 <- melt(RIL.RLG01150.2,id.vars="element")
+melt.RIL.RLG01150$variable <- factor(melt.RIL.RLG01150$variable,levels=colnames(rpm.2fam)[order(rpm.2fam["RLG01150",])])
+c <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.RIL.RLG01150,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+c
+```
+
+```{r}
+RIL.RLG02710 <- subset(RIL.elements,grepl("RLG02710",rownames(RIL.elements)))
+RIL.RLG02710.2 <- RIL.RLG02710
+for(i in 1:ncol(RIL.RLG02710)){
+  RIL.RLG02710.2[,i] <- RIL.RLG02710[,i] / sum(all.tefam[,colnames(RIL.RLG02710)[i]]) * 1000000
+}
+RIL.RLG02710.2$element <- rownames(RIL.RLG02710.2)
+melt.RIL.RLG02710 <- melt(RIL.RLG02710.2,id.vars="element")
+melt.RIL.RLG02710$variable <- factor(melt.RIL.RLG02710$variable,levels=colnames(rpm.2fam)[order(rpm.2fam["RLG02710",])])
+d <- ggplot() + geom_bar(aes(x=variable,y=value,fill=element),data=melt.RIL.RLG02710,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+d
+```
+
+```{r}
+grid.arrange(a,c,b,d,ncol=2)
+```
+
+Other fams
+```{r}
+fam.of.interest <- "RLG01150"
+
+plot.RIL.fam.of.interest <- function(fam.of.interest){
+a <- bimodality.plot2(fam.of.interest)
+
+prop.unique.2fam <- prop.unique.all[fam.of.interest,grepl("_GL_",colnames(prop.unique.all))]
+rpm.2fam <- all.tefam.rpm[fam.of.interest,grepl("_GL_",colnames(all.tefam.rpm))]
+unique.2 <- rpm.2fam * prop.unique.2fam
+unique.2$type <- "unique"
+unique.2$fam <- rownames(unique.2)
+multi.2 <- rpm.2fam * (1-prop.unique.2fam)
+multi.2$type <- "multi"
+multi.2$fam <- rownames(multi.2)
+
+both <- rbind(unique.2,multi.2)
+melt.both <- melt(both,id.vars = c("type","fam"))
+
+melt.both$variable <- factor(melt.both$variable,levels=colnames(rpm.2fam)[order(rpm.2fam[fam.of.interest,])])
+b <- ggplot() + geom_bar(aes(x=variable,y=value,fill=type),data=melt.both,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_grid(fam~.,scales="free_y") + scale_fill_manual(values=c("blue","red"))
+
+RIL.fam.of.interest <- subset(RIL.elements,grepl(fam.of.interest,rownames(RIL.elements)))
+RIL.fam.of.interest.2 <- RIL.fam.of.interest
+for(i in 1:ncol(RIL.fam.of.interest)){
+  RIL.fam.of.interest.2[,i] <- RIL.fam.of.interest[,i] / sum(all.tefam[,colnames(RIL.fam.of.interest)[i]]) * 1000000
+}
+RIL.fam.of.interest.2$element <- rownames(RIL.fam.of.interest.2)
+melt.RIL.fam.of.interest <- melt(RIL.fam.of.interest.2,id.vars="element")
+melt.RIL.fam.of.interest$variable <- factor(melt.RIL.fam.of.interest$variable,levels=colnames(rpm.2fam)[order(rpm.2fam[fam.of.interest,])])
+melt.RIL.fam.of.interest$label <- substr(melt.RIL.fam.of.interest$element,17,nchar(melt.RIL.fam.of.interest$element))
+c <- ggplot() + geom_bar(aes(x=variable,y=value,fill=label),data=melt.RIL.fam.of.interest,stat="identity") + theme_classic() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + scale_fill_brewer(palette="Paired")
+return(grid.arrange(a,b,c,ncol=1))
+}
+
+```
+
+```{r}
+plot.RIL.fam.of.interest("RLG01150")
+#plot.RIL.fam.of.interest("RLX06841")
+plot.RIL.fam.of.interest("DTA00022")
+```
+
+```{r}
+x <- plot.RIL.fam.of.interest("RLG05892")
+y <- plot.RIL.fam.of.interest("RLX01197")
+z <- plot.RIL.fam.of.interest("RLG01150")
+
+grid.arrange(x,y,z,ncol=3)
+```
+
+
+```{r}
+plot.RIL.fam.of.interest("RLG19900")
+plot.RIL.fam.of.interest("RLX19882")
+plot.RIL.fam.of.interest("RLG15046")
+plot.RIL.fam.of.interest("RLG11255")
+plot.RIL.fam.of.interest("RLC06241")
+plot.RIL.fam.of.interest("RLX20495")
+```
+
+Version 2
+```{r}
+x <- plot.RIL.fam.of.interest("RLG05892")
+y <- plot.RIL.fam.of.interest("RLG11255")
+z <- plot.RIL.fam.of.interest("RLG01150")
+
+grid.arrange(x,y,z,ncol=3)
+```
+
+
+Are any elements inversely correlated with total expression?
+```{r}
+fam.of.interest <- "DTA00022"
+RIL.fam.of.interest <- subset(RIL.elements,grepl(fam.of.interest,rownames(RIL.elements)))
+RIL.fam.of.interest.2 <- RIL.fam.of.interest
+for(i in 1:ncol(RIL.fam.of.interest)){
+  RIL.fam.of.interest.2[,i] <- RIL.fam.of.interest[,i] / sum(all.tefam[,colnames(RIL.fam.of.interest)[i]]) * 1000000
+}
+RIL.fam.of.interest.2$element <- rownames(RIL.fam.of.interest.2)
+
+fam.of.interest.rpm <- all.tefam.rpm.TEtable[fam.of.interest,colnames(RIL.fam.of.interest)]
+
+test.correlation.of.elements <- data.frame(matrix(NA,nrow=nrow(RIL.fam.of.interest.2),ncol=3))
+names(test.correlation.of.elements) <- c("element","correlation","p.val")
+test.correlation.of.elements$element <- RIL.fam.of.interest.2$element
+
+for(i in 1:nrow(test.correlation.of.elements)){
+  tmp.element <- test.correlation.of.elements$element[i]
+  tmp <- cor.test(as.numeric(RIL.fam.of.interest.2[tmp.element,1:214]),as.numeric(fam.of.interest.rpm))
+  test.correlation.of.elements[i,"correlation"] <- tmp$estimate
+  test.correlation.of.elements[i,"p.val"] <- tmp$p.value
+}
+
+test.correlation.of.elements
+```
+
+
+
+```{r}
+family.table <- head(data.frame(table(B73.attributes$fam)))
+names(family.table) <- c("fam","elements")
+bimodal.var2 <- merge(bimodal.var,family.table,by.x="family",by.y="fam")
+```
+
+
+
+Stress - delete all stress
+```{r}
+B73.stress.log2RPM <- all.tefam_log2.rpm.te[,colnames(all.tefam_log2.rpm.te) %in% stress.subset$colname]
+transpose_B73s <- t(as.matrix(B73.stress.log2RPM))
+pc.Bs <- prcomp(transpose_B73s)
+pca.sum.Bs <- summary(prcomp(transpose_B73s))
+pca.sum2.Bs <- pca.sum.Bs$importance
+pca1.Bs <-  data.frame(pc.Bs$x[,1:2])
+pca1.Bs$names <- rownames(pca1.Bs)
+pca1.Bs <- separate(pca1.Bs,names,c("tissue","details","dataset","genotype","replicate"),sep="_")
+
+ggplot(pca1.Bs,aes(PC1,PC2,color=factor(pca1.Bs$details),shape=factor(pca1.Bs$genotype))) + geom_point(size = 5,alpha = 0.9) + theme_classic() + labs(color = "details",shape = "genotype") + xlab(paste("PC1: ",pca.sum.Bs$importance[2,1] * 100,"%",collapse = "")) + ylab(paste("PC2: ",pca.sum.Bs$importance[2,2] * 100,"%",collapse = ""))
+```
+
+Call DE for colunms 1:4
+```{r}
+mandy.stress.counts <- all.tefam[rownames(all.tefam) != "Gene",stress.subset[stress.subset$genotype == "B","colname"]]
+mandy.stress.counts.keep <- mandy.stress.counts[rownames(all.tefam.rpm.TEtable)[rowSums(all.tefam.rpm.TEtable[,stress.subset[stress.subset$genotype == "B","colname"]] >= 1) >= 3],]
+
+sample.info <- as.data.frame(cbind(paste(stress.subset[stress.subset$genotype == "B","colname"]),stress.subset[stress.subset$genotype == "B","details"]))
+rownames(sample.info) <- sample.info[,1]
+sample_list <- sample.info[,2]
+names(sample.info) <- c("sample.info","sample_list")
+
+ddsFullCountTable <- DESeqDataSetFromMatrix(countData = mandy.stress.counts.keep,
+                                            colData = sample.info, design = ~ sample_list)
+ddsFullCountTable <- estimateSizeFactors(ddsFullCountTable)
+deseq <- DESeq(ddsFullCountTable)
+rld <- rlog(deseq, blind=FALSE)
+plotPCA(rld,intgroup = "sample_list",ntop = 10000)
+```
+
+Create table of DE results
+```{r}
+res.cold <- results(deseq,contrast = c("sample_list","cold","control"),pAdjustMethod = "fdr")
+out.cold <- as.data.frame(res.cold)
+out.cold$is.de.cold <- ifelse(out.cold$padj < .05 & out.cold$log2FoldChange > 2 , "up", ifelse(out.cold$padj < .05 & out.cold$log2FoldChange < -2 , "down", 0))
+table(out.cold$is.de.cold)
+cold.up <- rownames(out.cold[out.cold$is.de.cold == "up",])
+cold.down <- rownames(out.cold[out.cold$is.de.cold == "down",])
+
+res.heat <- results(deseq,contrast = c("sample_list","heat","control"),pAdjustMethod = "fdr")
+out.heat <- as.data.frame(res.heat)
+out.heat$is.de.heat <- ifelse(out.heat$padj < .05 & out.heat$log2FoldChange > 2 , "up", ifelse(out.heat$padj < .05 & out.heat$log2FoldChange < -2 , "down", 0))
+table(out.heat$is.de.heat)
+heat.up <- rownames(out.heat[out.heat$is.de.heat == "up",])
+heat.down <- rownames(out.heat[out.heat$is.de.heat == "down",])
+```
+
+```{r}
+stressed.samples <- stress.subset[stress.subset$details != "control",]
+
+all.stress.RPM <- all.tefam.rpm.TEtable[rownames(all.tefam.rpm.TEtable) %in% rownames(out.cold),stress.subset$colname]
+all.stress.RPM[all.stress.RPM == 0] <- 0.01
+
+controls.stress <- unique(stress.subset$genotype)
+stress.control.means <- data.frame(matrix(NA,ncol=length(controls.stress),nrow=nrow(out.cold)))
+rownames(stress.control.means) <- rownames(out.cold)
+colnames(stress.control.means) <- controls.stress
+for(i in 1:ncol(stress.control.means)){
+  stress.control.means[,i] <- rowMeans(all.stress.RPM[,grep(paste("control_SW_",colnames(stress.control.means)[i],"_",sep=""),colnames(all.stress.RPM))])
+}
+
+fc.stress.all <- data.frame(matrix(NA,ncol=nrow(stressed.samples),nrow=nrow(out.cold)))
+colnames(fc.stress.all) <- stressed.samples$colname
+rownames(fc.stress.all) <- rownames(out.cold)
+
+for(i in 1:ncol(fc.stress.all)){
+  fc.stress.all[,i] <- all.stress.RPM[,colnames(fc.stress.all)[i]]/stress.control.means[,stressed.samples[i,"genotype"]]
+}
+
+log2fc.stress.all <- log2(as.matrix(fc.stress.all))
+
+pheatmap(log2fc.stress.all,color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA)
+```
+
+```{r}
+# pheatmap(log2fc.stress.all[rownames(log2fc.stress.all) %in% cold.up,],color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA,cluster_cols = F)
+# pheatmap(log2fc.stress.all[rownames(log2fc.stress.all) %in% cold.down,],color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA,cluster_cols = F)
+# pheatmap(log2fc.stress.all[rownames(log2fc.stress.all) %in% heat.up,],color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA,cluster_cols = F)
+# pheatmap(log2fc.stress.all[rownames(log2fc.stress.all) %in% heat.down,],color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA,cluster_cols = F)
+```
+
+```{r}
+stress.fams <- merge(out.heat[,"is.de.heat",drop=F],out.cold[,"is.de.cold",drop=F],by="row.names",all=T)
+stress.de.fams <- subset(stress.fams,rowSums(stress.fams == 0) < 2)
+stress.de.fams <- mutate(stress.de.fams,category = paste(is.de.heat,is.de.cold,sep="_"))
+
+stress.de.fams2 <-stress.de.fams[order(stress.de.fams$category,decreasing = T),]
+stress.breaks <- grep("TRUE",!duplicated(stress.de.fams2$category))
+stress.de.fams3 <- subset(stress.de.fams2,stress.de.fams2$is.de.cold != 0)
+
+pheatmap(log2fc.stress.all[stress.de.fams2$Row.names,1:6],color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA,cluster_cols = F,cluster_rows = F ,gaps_row = stress.breaks[2:length(stress.breaks)]-1)
+```
+
+```{r}
+off.control <- subset(B73.stress.log2RPM,rowSums(B73.stress.log2RPM[,grep("control_SW_B_",colnames(B73.stress.log2RPM))] < .1)==3)
+stress.de.fams3$off.control <- stress.de.fams3$Row.names %in% rownames(off.control)
+
+stress.de.fams3$category2 <- ifelse(stress.de.fams3$is.de.cold == "up" & stress.de.fams3$off.control,"off.on",ifelse(stress.de.fams3$is.de.cold == "up","up","down"))
+table(stress.de.fams3$category2)
+rownames(stress.de.fams3) <- stress.de.fams3$Row.names
+stress.de.fams4 <- stress.de.fams3[c(stress.de.fams3[stress.de.fams3$category2 == "off.on","Row.names"],stress.de.fams3[stress.de.fams3$category2 == "up","Row.names"],stress.de.fams3[stress.de.fams3$category2 == "down","Row.names"]),]
+
+pheatmap(log2fc.stress.all[stress.de.fams4$Row.names,colnames(log2fc.stress.all)[grepl("cold",colnames(log2fc.stress.all)) & nchar(colnames(log2fc.stress.all)) == 16]],color = baby.goat(length(breaksList)),breaks = breaksList,border_color = NA,cluster_cols = F,cluster_rows = F,gaps_row = c(18,64+18),show_rownames = F,gaps_col = c(3,6))
+
+stress.de.fams4$order <- substr(stress.de.fams4$Row.names,0,2)
+table.stress.de.fams4 <- data.frame(table(stress.de.fams4[,c("order","is.de.cold")]))
+table.stress.de.fams4$order <- factor(table.stress.de.fams4$order,levels=c("RL","DT","DH","RI"))
+table.stress.de.fams4$is.de.cold <- factor(table.stress.de.fams4$is.de.cold,levels=c("up","down"))
+
+ggplot(table.stress.de.fams4, aes(x = "", y = Freq, fill = order)) + geom_bar(stat = "identity",position = position_fill()) + theme_minimal() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_polar("y",start=0) + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink")) + facet_wrap(.~is.de.cold,ncol = 1) + theme(axis.text.x=element_blank())
+```
+
+
+quick look at Peng's samples
+```{r}
+peng.trio.samples <- subset(all.samples,all.samples$experiment == "DZ")
+#peng.trio.seed <- subset(peng.trio.samples,peng.trio.samples$tissue == "seed")
+peng.trio.seed <- subset(peng.trio.samples,peng.trio.samples$tissue == "embryo" & peng.trio.samples$details == "27dap")
+
+peng.trio.seed.rpm <- all.tefam.rpm.TEtable[,peng.trio.seed$colname]
+peng.trio.seed.rpm2 <- subset(peng.trio.seed.rpm,rowSums(peng.trio.seed.rpm[,1:3]>=2)==3 & rowSums(peng.trio.seed.rpm[,4:6]<=1)==3)
+
+B.only.peng.relative <- peng.trio.seed.rpm2/rowMeans(peng.trio.seed.rpm2[,1:3])
+
+plot(density(rowMeans(B.only.peng.relative[,7:9])))
+pheatmap(B.only.peng.relative[order(rowMeans(B.only.peng.relative[,7:9]),decreasing = T),],border_color = NA,cluster_cols = F,cluster_rows = F,gaps_col = c(3,6),labels_row = "")
+```
+
+```{r}
+peng.trio.rpm <- all.tefam.rpm.TEtable[,peng.trio.samples$colname]
+B73.samples.peng <- peng.trio.samples[peng.trio.samples$genotype == "B","colname"]
+Mo17.samples.peng <- peng.trio.samples[peng.trio.samples$genotype == "M","colname"]
+peng.trio.rpm2 <- subset(peng.trio.rpm,rowMeans(peng.trio.rpm[,B73.samples.peng]) > 2* rowMeans(peng.trio.rpm[,Mo17.samples.peng]) & rowSums(peng.trio.rpm[,Mo17.samples.peng] <= 1) < 3)
+
+B.peng.relative <- peng.trio.rpm2/rowMeans(peng.trio.rpm2[,B73.samples.peng])
+
+pheatmap(log2(1+peng.trio.rpm2)/rowMaxs(as.matrix(log2(1+peng.trio.rpm2))),border_color = NA,cluster_cols = F,cluster_rows = T)
+```
+
+
+
+```{r}
+peng.trios.a <- subset(peng.trio.samples,grepl("embryo_27d",peng.trio.samples$colname))
+peng.trios.b <- subset(peng.trio.samples,grepl("endosperm_14dap",peng.trio.samples$colname))
+peng.trios.c <- subset(peng.trio.samples,grepl("endosperm_27dap",peng.trio.samples$colname))
+peng.trios.d <- subset(peng.trio.samples,grepl("seed_14dap",peng.trio.samples$colname))
+
+hybrid.palette <- colorRampPalette(c("mediumslateblue","gray95","sienna1","sienna4"))
+breaksList.h = c(seq(0,3,by=0.01))
+
+peng.trios.rpm.a <- all.tefam.rpm.TEtable[,peng.trios.a$colname]
+peng.trios.rpm.a2 <- subset(peng.trios.rpm.a,rowSums(peng.trios.rpm.a[,1:3]>=2)==3 & rowSums(peng.trios.rpm.a[,4:6]<=1)==3)
+B.only.peng.relative.a <- (peng.trios.rpm.a2/rowMeans(peng.trios.rpm.a2[,1:3]))[,c(1:3,7:9,4:6)]
+pheatmap(B.only.peng.relative.a[order(rowMeans(B.only.peng.relative.a[,4:6]),decreasing = T),],border_color = NA,cluster_cols = F,cluster_rows = F,gaps_col = c(3,6),labels_row = "",color = hybrid.palette(length(breaksList.h)),breaks = breaksList.h)
+
+peng.trios.rpm.b <- all.tefam.rpm.TEtable[,peng.trios.b$colname]
+peng.trios.rpm.b2 <- subset(peng.trios.rpm.b,rowSums(peng.trios.rpm.b[,1:3]>=2)==3 & rowSums(peng.trios.rpm.b[,4:6]<=1)==3)
+B.only.peng.relative.b <- (peng.trios.rpm.b2/rowMeans(peng.trios.rpm.b2[,1:3]))[,c(1:3,7:9,4:6)]
+pheatmap(B.only.peng.relative.b[order(rowMeans(B.only.peng.relative.b[,4:6]),decreasing = T),],border_color = NA,cluster_cols = F,cluster_rows = F,gaps_col = c(3,6),labels_row = "",color = hybrid.palette(length(breaksList.h)),breaks = breaksList.h)
+
+peng.trios.rpm.c <- all.tefam.rpm.TEtable[,peng.trios.c$colname]
+peng.trios.rpm.c2 <- subset(peng.trios.rpm.c,rowSums(peng.trios.rpm.c[,1:3]>=2)==3 & rowSums(peng.trios.rpm.c[,4:6]<=1)==3)
+B.only.peng.relative.c <- (peng.trios.rpm.c2/rowMeans(peng.trios.rpm.c2[,1:3]))[,c(1:3,7:9,4:6)]
+pheatmap(B.only.peng.relative.c[order(rowMeans(B.only.peng.relative.c[,4:6]),decreasing = T),],border_color = NA,cluster_cols = F,cluster_rows = F,gaps_col = c(3,6),labels_row = "",color = hybrid.palette(length(breaksList.h)),breaks = breaksList.h)
+
+peng.trios.rpm.d <- all.tefam.rpm.TEtable[,peng.trios.d$colname]
+peng.trios.rpm.d2 <- subset(peng.trios.rpm.d,rowSums(peng.trios.rpm.d[,1:3]>=2)==3 & rowSums(peng.trios.rpm.d[,4:6]<=1)==3)
+B.only.peng.relative.d <- (peng.trios.rpm.d2/rowMeans(peng.trios.rpm.d2[,1:3]))[,c(1:3,7:9,4:6)]
+pheatmap(B.only.peng.relative.d[order(rowMeans(B.only.peng.relative.d[,4:6]),decreasing = T),],border_color = NA,cluster_cols = F,cluster_rows = F,gaps_col = c(3,6),labels_row = "",color = hybrid.palette(length(breaksList.h)),breaks = breaksList.h)
+
+```
+
+Calculate real D/A for 27dap embryo
+peng.trios.rpm.a
+```{r}
+da.plot <- function(peng.trios.rpm.a){
+means.emb.trio.rpm <- data.frame(matrix(NA,nrow=nrow(peng.trios.rpm.a),ncol=3))
+rownames(means.emb.trio.rpm) <- rownames(peng.trios.rpm.a)
+names(means.emb.trio.rpm) <- c("B73","Mo17","F1")
+means.emb.trio.rpm[,1] <- rowMeans(peng.trios.rpm.a[,grepl("_B_",colnames(peng.trios.rpm.a))])
+means.emb.trio.rpm[,2] <- rowMeans(peng.trios.rpm.a[,grepl("_M_",colnames(peng.trios.rpm.a))])
+means.emb.trio.rpm[,3] <- rowMeans(peng.trios.rpm.a[,grepl("_MB_",colnames(peng.trios.rpm.a))])
+
+means.emb.trio.rpm2 <- subset(means.emb.trio.rpm,rowSums(means.emb.trio.rpm >= 1) > 0)
+
+means.emb.trio.rpm2$high.parent <- rowMaxs(as.matrix(means.emb.trio.rpm2[,1:2]))
+means.emb.trio.rpm2$low.parent <- rowMins(as.matrix(means.emb.trio.rpm2[,1:2]))
+means.emb.trio.rpm2$mid.parent <- rowMeans(as.matrix(means.emb.trio.rpm2[,1:2]))
+
+means.emb.trio.rpm2$DA <- (means.emb.trio.rpm2[,3] - means.emb.trio.rpm2$mid.parent)/(means.emb.trio.rpm2$high.parent - means.emb.trio.rpm2$mid.parent)
+
+means.emb.trio.rpm2$fc <- means.emb.trio.rpm2$high.parent/means.emb.trio.rpm2$low.parent
+#means.emb.trio.rpm2$fc_category <- ifelse(means.emb.trio.rpm2$fc < 2, "1to2",ifelse(means.emb.trio.rpm2$fc<4, "2to4",ifelse(means.emb.trio.rpm2$fc < 6, "4to6","6plus")))
+means.emb.trio.rpm2$fc_category <- ifelse(means.emb.trio.rpm2$fc < 2, "1to2",ifelse(means.emb.trio.rpm2$fc<4, "2to4","4plus"))
+
+p <- ggplot(means.emb.trio.rpm2,aes(x=DA,color=fc_category)) + geom_density() + theme_classic() + xlim(-3,3) 
+return(p)
+}
+a <- da.plot(peng.trios.rpm.a)
+b <- da.plot(peng.trios.rpm.b)
+c <- da.plot(peng.trios.rpm.d)
+grid.arrange(a,b,c,nrow=1)
+```
+
+Pheatmap for D/A > 2
+```{r}
+da.pheatmap <- function(peng.trios.rpm.a){
+means.emb.trio.rpm <- data.frame(matrix(NA,nrow=nrow(peng.trios.rpm.a),ncol=3))
+rownames(means.emb.trio.rpm) <- rownames(peng.trios.rpm.a)
+names(means.emb.trio.rpm) <- c("B73","Mo17","F1")
+means.emb.trio.rpm[,1] <- rowMeans(peng.trios.rpm.a[,grepl("_B_",colnames(peng.trios.rpm.a))])
+means.emb.trio.rpm[,2] <- rowMeans(peng.trios.rpm.a[,grepl("_M_",colnames(peng.trios.rpm.a))])
+means.emb.trio.rpm[,3] <- rowMeans(peng.trios.rpm.a[,grepl("_MB_",colnames(peng.trios.rpm.a))])
+
+means.emb.trio.rpm2 <- subset(means.emb.trio.rpm,rowSums(means.emb.trio.rpm >= 1) > 0)
+
+means.emb.trio.rpm2$high.parent <- rowMaxs(as.matrix(means.emb.trio.rpm2[,1:2]))
+means.emb.trio.rpm2$low.parent <- rowMins(as.matrix(means.emb.trio.rpm2[,1:2]))
+means.emb.trio.rpm2$mid.parent <- rowMeans(as.matrix(means.emb.trio.rpm2[,1:2]))
+
+means.emb.trio.rpm2$DA <- (means.emb.trio.rpm2[,3] - means.emb.trio.rpm2$mid.parent)/(means.emb.trio.rpm2$high.parent - means.emb.trio.rpm2$mid.parent)
+means.emb.trio.rpm2$fc <- means.emb.trio.rpm2$high.parent/means.emb.trio.rpm2$low.parent
+
+tmp <- as.matrix(log2(1+peng.trios.rpm.a[rownames(subset(means.emb.trio.rpm2,abs(DA) >=2 & means.emb.trio.rpm2$fc >= 2)),c(1:3,7:9,4:6)]))
+
+return(pheatmap(tmp/rowMeans(tmp[,c(1:3,7:9)]),cluster_cols = F,border_color = NA))
+}
+da.pheatmap(peng.trios.rpm.a)
+da.pheatmap(peng.trios.rpm.b)
+da.pheatmap(peng.trios.rpm.d)
+```
+
+hybrid redo
+```{r}
+peng.redo <- read.table("family_sum_combined_counts_peng_21Mar19.txt",header = T,stringsAsFactors = F)
+rownames(peng.redo) <- peng.redo$family
+peng.redo$family <- NULL
+peng.samples <- read.table("peng_development_samples.tsv",header=T,stringsAsFactors = F)
+```
+
+```{r}
+peng.redo2 <- subset(peng.redo,rownames(peng.redo) != "Multifam")[,colnames(peng.redo) %in% peng.samples$SampleID]
+peng.redo.rpm <- peng.redo2
+for(i in 1:ncol(peng.redo.rpm)){
+  peng.redo.rpm[,i] <- peng.redo2[,i]/sum(peng.redo2[,i]) * 1000000
+}
+peng.redo.rpm.TEtable <- peng.redo.rpm[!rownames(peng.redo.rpm) == "Gene",]
+log2.peng.redo.rpm <- as.matrix(log2(peng.redo.rpm.TEtable + 1))
+
+peng.reads <- peng.redo2[!rownames(peng.redo2) == "Gene",]
+```
+
+Do DE calls between B73, Mo17, hybrid for embryo_27DAP , floret_0DAP , seedlingleaf_11DAS , seedlingroot_11DAS
+```{r}
+tissue.oi <- "embryo_27DAP"
+deseq.peng.dat <- function(tissue.oi){
+sample.peng <- subset(peng.samples,peng.samples$Tissue == tissue.oi)
+rownames(sample.peng) <- sample.peng$SampleID
+sample.peng$sample.info <- sample.peng$SampleID
+sample.peng$sample_list <- sample.peng$Genotype
+
+counts.subset <- subset(peng.reads,rowSums(peng.redo.rpm.TEtable[,sample.peng$SampleID] > 1) >= 3)[,sample.peng$SampleID]
+
+ddsFullCountTable.p <- DESeqDataSetFromMatrix(countData = counts.subset,
+                                            colData = sample.peng, design = ~ sample_list)
+ddsFullCountTable.p <- estimateSizeFactors(ddsFullCountTable.p)
+deseq.p <- DESeq(ddsFullCountTable.p)
+rld.p <- rlog(deseq.p, blind=FALSE)
+#plotPCA(rld.p,intgroup = "sample_list",ntop = 10000)
+
+res.p1 <- results(deseq.p,contrast=c("sample_list","B73","Mo17"),pAdjustMethod = "fdr")
+out.p1 <- as.data.frame(res.p1)
+out.p1$is.de <- ifelse(out.p1$padj < .05 & out.p1$log2FoldChange > 1 , "B.up.v.M", ifelse(out.p1$padj < .05 & out.p1$log2FoldChange < -1 , "M.up.v.B", 0))
+#out.p1$is.de <- ifelse(out.p1$padj < .05 & out.p1$log2FoldChange > 2 , "B.up.v.M", ifelse(out.p1$padj < .05 & out.p1$log2FoldChange < -2 , "M.up.v.B", 0))
+colnames(out.p1) <- paste(colnames(out.p1),tissue.oi,"BvM",sep=".")
+#table(out.p1$is.de)
+
+res.p2 <- results(deseq.p,contrast=c("sample_list","B73","B73xMo17"),pAdjustMethod = "fdr")
+out.p2 <- as.data.frame(res.p2)
+out.p2$is.de <- ifelse(out.p2$padj < .05 & out.p2$log2FoldChange > 1 , "B.up.v.F1", ifelse(out.p2$padj < .05 & out.p2$log2FoldChange < -1 , "F1.up.v.B", 0))
+#out.p2$is.de <- ifelse(out.p2$padj < .05 & out.p2$log2FoldChange > 2 , "B.up.v.F1", ifelse(out.p2$padj < .05 & out.p2$log2FoldChange < -2 , "F1.up.v.B", 0))
+colnames(out.p2) <- paste(colnames(out.p2),tissue.oi,"BvF1",sep=".")
+#table(out.p2$is.de)
+
+res.p3 <- results(deseq.p,contrast=c("sample_list","Mo17","B73xMo17"),pAdjustMethod = "fdr")
+out.p3 <- as.data.frame(res.p3)
+out.p3$is.de <- ifelse(out.p3$padj < .05 & out.p3$log2FoldChange > 1 , "M.up.v.F1", ifelse(out.p3$padj < .05 & out.p3$log2FoldChange < -1 , "F1.up.v.M", 0))
+#out.p3$is.de <- ifelse(out.p3$padj < .05 & out.p3$log2FoldChange > 2 , "M.up.v.F1", ifelse(out.p3$padj < .05 & out.p3$log2FoldChange < -2, "F1.up.v.M", 0))
+colnames(out.p3) <- paste(colnames(out.p3),tissue.oi,"MvF1",sep=".")
+#table(out.p3$is.de)
+
+out.all <- data.frame(cbind(out.p1,out.p2,out.p3))
+return(out.all)
+}
+```
+
+Run on 4 tissues
+```{r}
+emb.out <- deseq.peng.dat("embryo_27DAP")
+emb.out$family <- rownames(emb.out)
+data.frame(table(emb.out[,grep("is.de",colnames(emb.out))]))
+
+floret.out <- deseq.peng.dat("floret_0DAP")
+floret.out$family <- rownames(floret.out)
+data.frame(table(floret.out[,grep("is.de",colnames(floret.out))]))
+
+leaf.out <- deseq.peng.dat("seedlingleaf_11DAS")
+leaf.out$family <- rownames(leaf.out)
+data.frame(table(leaf.out[,grep("is.de",colnames(leaf.out))]))
+
+root.out <- deseq.peng.dat("radicle_root")
+root.out$family <- rownames(root.out)
+data.frame(table(root.out[,grep("is.de",colnames(root.out))]))
+```
+
+```{r}
+four.tissue.merge <- join_all(list(emb.out,floret.out,leaf.out,root.out),by = "family",type="full")
+rownames(four.tissue.merge) <- four.tissue.merge$family
+```
+
+```{r}
+DA.of.tissue <- function(tissue.oi){
+  sample.peng <- subset(peng.samples,peng.samples$Tissue == tissue.oi)
+  rpm.dataframe <- peng.redo.rpm.TEtable[rownames(subset(four.tissue.merge,four.tissue.merge$is.de.embryo_27DAP.BvM != 0)),sample.peng$SampleID]
+  rpm.dataframe$B <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "B73","SampleID"]])
+  rpm.dataframe$M <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "Mo17","SampleID"]])
+  rpm.dataframe$F1 <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "B73xMo17","SampleID"]])
+  rpm.dataframe$high.parent <- rowMaxs(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$low.parent <- rowMins(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$mid.parent <- rowMeans(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$DA <- (rpm.dataframe[,"F1"] - rpm.dataframe$mid.parent)/(rpm.dataframe$high.parent - rpm.dataframe$mid.parent)
+  #rpm.dataframe$DA <- log2(rpm.dataframe[,"F1"] / rpm.dataframe$mid.parent)
+  rpm.dataframe$fc <- rpm.dataframe$high.parent/rpm.dataframe$low.parent
+  rpm.dataframe$fc_category <- ifelse(rpm.dataframe$fc < 4, "2to4",ifelse(rpm.dataframe$fc<6, "4to6","6plus"))
+  rpm.dataframe$DE_category <- ifelse(rpm.dataframe$B | rpm.dataframe$M == 0,"SPE","DE")
+  
+  #p <- ggplot(rpm.dataframe,aes(x=DA,color=DE_category)) + geom_density() + theme_classic() + xlim(-3,3) + ggtitle(tissue.oi)
+  p <- ggplot(rpm.dataframe,aes(x=DA)) + geom_density() + theme_classic()  + ggtitle(tissue.oi)
+  return(p)
+}
+
+hybrid.over.midparent <- function(tissue.oi){
+  sample.peng <- subset(peng.samples,peng.samples$Tissue == tissue.oi)
+  rpm.dataframe <- peng.redo.rpm.TEtable[rownames(subset(four.tissue.merge,four.tissue.merge$is.de.embryo_27DAP.BvM != 0)),sample.peng$SampleID]
+  rpm.dataframe$B <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "B73","SampleID"]])
+  rpm.dataframe$M <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "Mo17","SampleID"]])
+  rpm.dataframe$F1 <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "B73xMo17","SampleID"]])
+  rpm.dataframe$high.parent <- rowMaxs(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$low.parent <- rowMins(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$mid.parent <- rowMeans(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$value <- log2(rpm.dataframe[,"F1"] / rpm.dataframe$mid.parent)
+  rpm.dataframe$fc <- rpm.dataframe$high.parent/rpm.dataframe$low.parent
+  rpm.dataframe$fc_category <- ifelse(rpm.dataframe$fc < 4, "2to4",ifelse(rpm.dataframe$fc<6, "4to6","6plus"))
+  rpm.dataframe$DE_category <- ifelse(rpm.dataframe$B | rpm.dataframe$M == 0,"SPE","DE")
+  
+  #p <- ggplot(rpm.dataframe,aes(x=DA,color=DE_category)) + geom_density() + theme_classic() + xlim(-3,3) + ggtitle(tissue.oi)
+  p <- ggplot(rpm.dataframe,aes(x=value)) + geom_density() + theme_classic()  + ggtitle(tissue.oi)
+  return(p)
+}
+midparent.table <- function(tissue.oi){
+  sample.peng <- subset(peng.samples,peng.samples$Tissue == tissue.oi)
+  rpm.dataframe <- peng.redo.rpm.TEtable[rownames(subset(four.tissue.merge,four.tissue.merge$is.de.embryo_27DAP.BvM != 0)),sample.peng$SampleID]
+  rpm.dataframe$B <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "B73","SampleID"]])
+  rpm.dataframe$M <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "Mo17","SampleID"]])
+  rpm.dataframe$F1 <- rowMeans(rpm.dataframe[,sample.peng[sample.peng$Genotype == "B73xMo17","SampleID"]])
+  rpm.dataframe$high.parent <- rowMaxs(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$low.parent <- rowMins(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$mid.parent <- rowMeans(as.matrix(rpm.dataframe[,c("B","M")]))
+  rpm.dataframe$value <- log2(rpm.dataframe[,"F1"] / rpm.dataframe$mid.parent)
+  rpm.dataframe$fc <- rpm.dataframe$high.parent/rpm.dataframe$low.parent
+  rpm.dataframe$fc_category <- ifelse(rpm.dataframe$fc < 4, "2to4",ifelse(rpm.dataframe$fc<6, "4to6","6plus"))
+  rpm.dataframe$DE_category <- ifelse(rpm.dataframe$B | rpm.dataframe$M == 0,"SPE","DE")
+  return(rpm.dataframe)
+}
+```
+
+```{r}
+a <- DA.of.tissue("embryo_27DAP")
+b <- DA.of.tissue("floret_0DAP")
+c <- DA.of.tissue("seedlingleaf_11DAS")
+d <- DA.of.tissue("radicle_root")
+grid.arrange(a,b,c,d)
+```
+
+```{r}
+a <- hybrid.over.midparent("embryo_27DAP")
+b <- hybrid.over.midparent("floret_0DAP")
+c <- hybrid.over.midparent("seedlingleaf_11DAS")
+d <- hybrid.over.midparent("radicle_root")
+grid.arrange(a,b,c,d)
+```
+
+```{r}
+a <- midparent.table("embryo_27DAP")
+a$tissue <- "embryo_27DAP"
+b <- midparent.table("floret_0DAP")
+b$tissue <- "floret_0DAP"
+c <- midparent.table("seedlingleaf_11DAS")
+c$tissue <- "seedlingleaf_11DAS"
+d <- midparent.table("tassel_v12")
+d$tissue <- "tassel_v12"
+
+plot.midparent <- rbind(a[,c("value","tissue")],b[,c("value","tissue")],c[,c("value","tissue")],d[,c("value","tissue")])
+
+ggplot(plot.midparent,aes(x=value,color = tissue)) + geom_density() + theme_classic() + scale_color_brewer(palette="Dark2")
+```
+
+
+Find families up-regulated in hybrid relative to both parents
+```{r}
+pheatmap.up.in.hybrid <- function(tissue.oi){
+  families.overexpressed <- subset(four.tissue.merge,four.tissue.merge[,paste("is.de",tissue.oi,"BvF1",sep=".")] == "F1.up.v.B" & four.tissue.merge[,paste("is.de",tissue.oi,"MvF1",sep=".")] == "F1.up.v.M")
+  sample.peng <- subset(peng.samples,peng.samples$Tissue == tissue.oi)
+  rpm.dataframe <- peng.redo.rpm.TEtable[rownames(families.overexpressed),sample.peng$SampleID]
+  rpm.dataframe2 <- rpm.dataframe[,c(sample.peng[sample.peng$Genotype == "B73","SampleID"],sample.peng[sample.peng$Genotype == "B73xMo17","SampleID"],sample.peng[sample.peng$Genotype == "Mo17","SampleID"])]
+  names(rpm.dataframe2) <- c("B73.1","B73.2","B73.3","B73xMo17.1","B73xMo17.2","B73xMo17.3","Mo17.1","Mo17.2","Mo17.3")
+  return(rpm.dataframe2)
+}
+```
+
+```{r}
+emb.outliers <- pheatmap.up.in.hybrid("embryo_27DAP")
+floret.outliers <- pheatmap.up.in.hybrid("floret_0DAP")
+leaf.outliers <- pheatmap.up.in.hybrid("seedlingleaf_11DAS")
+root.outliers <- pheatmap.up.in.hybrid("radicle_root")
+
+#outlier.plot <- rbind(emb.outliers,floret.outliers,leaf.outliers,root.outliers)
+outlier.plot <- rbind(emb.outliers,floret.outliers)
+
+#pheatmap(log2(1+outlier.plot),cluster_cols = F,cluster_rows = F,gaps_row = c(nrow(emb.outliers),nrow(emb.outliers)+nrow(floret.outliers),nrow(emb.outliers)+nrow(floret.outliers)+nrow(root.outliers)),border_color = NA)
+```
+
+
+
+```{r}
+#look.at.abovehighparent <- data.frame(rbind(cbind(rownames(emb.outliers),"embryo"),cbind(rownames(floret.outliers),"floret"),cbind(rownames(leaf.outliers),"leaf"),cbind(rownames(root.outliers),"root")))
+look.at.abovehighparent <- data.frame(rbind(cbind(rownames(emb.outliers),"embryo"),cbind(rownames(floret.outliers),"floret")))
+names(look.at.abovehighparent) <- c("family","tissue")
+
+plot.outliers <- data.frame(peng.redo.rpm.TEtable[paste(look.at.abovehighparent$family),])
+plot.outliers$family <- look.at.abovehighparent$family
+plot.outliers$tissue <- look.at.abovehighparent$tissue
+
+peng.samples$libname <- paste(peng.samples$Tissue,peng.samples$Genotype,peng.samples$Replicate,sep=".")
+
+melt.outliers <- melt(plot.outliers,id.vars=c("family","tissue"))
+melt.outliers2 <- merge(melt.outliers,peng.samples[,c("SampleID","libname","Genotype","Tissue")],by.x="variable",by.y="SampleID",all=T)
+
+peng.tissue.list <- unique(peng.samples$Tissue)
+melt.outliers4 <- data.frame(matrix(NA,nrow=0,ncol=ncol(melt.outliers2)))
+names(melt.outliers4) <- names(melt.outliers2)
+for(i in 1:length(peng.tissue.list)){
+  tmp.colnames <- subset(peng.samples,peng.samples$Tissue == peng.tissue.list[i])
+  tmp <- peng.redo.rpm.TEtable[,tmp.colnames$SampleID]
+  for(j in 1:length(look.at.abovehighparent$family)){
+    fam.oi <- paste(look.at.abovehighparent$family[j])
+    if(rowSums(tmp[fam.oi,] >=1 ) >=3){
+      melt.outliers4 <- rbind(melt.outliers4,subset(melt.outliers2,melt.outliers2$family == fam.oi & melt.outliers2$Tissue == peng.tissue.list[i]))
+    }
+  }
+}
+
+#ggplot(melt.outliers4,aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+
+ggplot(subset(melt.outliers4,melt.outliers4$family == "DHH02488"),aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+
+ggplot(subset(melt.outliers4,melt.outliers4$family == "RLG17656"),aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+
+ggplot(subset(melt.outliers4,melt.outliers4$family == "RLX14864"),aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+```
+
+```{r}
+melt.outliers3 <- subset(melt.outliers2,melt.outliers2$tissue == "embryo" & melt.outliers2$Tissue == "embryo_27DAP" | melt.outliers2$tissue == "floret" & melt.outliers2$Tissue == "floret_0DAP" | melt.outliers2$tissue == "leaf" & melt.outliers2$Tissue == "seedlingleaf_11DAS" | melt.outliers2$tissue == "root" & melt.outliers2$Tissue == "radicle_root")
+melt.outliers3$family <- factor(melt.outliers3$family,levels=look.at.abovehighparent$family)
+
+ggplot(melt.outliers3,aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free",ncol=6) + scale_fill_brewer(palette = "Set1")
+```
+
+Three line expression
+```{r}
+three.line.expression <- function(fam.oi){
+  plot.outliers <- melt(data.frame(peng.redo.rpm.TEtable[fam.oi,]))
+  plot.outliers$family <- fam.oi
+  melt.outliers <- merge(plot.outliers,peng.samples[,c("SampleID","libname","Genotype","Tissue")],by.x="variable",by.y="SampleID",all=T)
+  melt.outliers2 <- unique(melt.outliers[,c("Genotype","Tissue")])
+  for(i in 1:nrow(melt.outliers2)){
+    tmp <- subset(melt.outliers,melt.outliers$Genotype == melt.outliers2[i,"Genotype"] & melt.outliers$Tissue == melt.outliers2[i,"Tissue"])
+    melt.outliers2[i,"mean"] <- mean(tmp$value)
+    melt.outliers2[i,"se"] <- sd(tmp$value) / sqrt(sum(tmp$value))
+  }
+  melt.outliers2[is.na(melt.outliers2)] <- 0
+  p <- ggplot(melt.outliers2,aes(x=Tissue,y=mean,group=Genotype,color=Genotype)) + geom_line() + geom_point() + geom_errorbar(aes(ymin = mean - se, ymax = mean + se),width = .2) + theme_classic() + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + labs(title = fam.oi) + scale_color_manual(values=c("red","darkorchid1","navy"))
+  return(p)
+}
+```
+
+```{r}
+three.line.expression("RLG17656")
+three.line.expression("RLX08759")
+```
+
+Find families down-regulated in hybrid relative to both parents
+```{r}
+pheatmap.down.in.hybrid <- function(tissue.oi){
+  families.overexpressed <- subset(four.tissue.merge,four.tissue.merge[,paste("is.de",tissue.oi,"BvF1",sep=".")] == "B.up.v.F1" & four.tissue.merge[,paste("is.de",tissue.oi,"MvF1",sep=".")] == "M.up.v.F1")
+  sample.peng <- subset(peng.samples,peng.samples$Tissue == tissue.oi)
+  rpm.dataframe <- peng.redo.rpm.TEtable[rownames(families.overexpressed),sample.peng$SampleID]
+  rpm.dataframe2 <- rpm.dataframe[,c(sample.peng[sample.peng$Genotype == "B73","SampleID"],sample.peng[sample.peng$Genotype == "B73xMo17","SampleID"],sample.peng[sample.peng$Genotype == "Mo17","SampleID"])]
+  names(rpm.dataframe2) <- c("B73.1","B73.2","B73.3","B73xMo17.1","B73xMo17.2","B73xMo17.3","Mo17.1","Mo17.2","Mo17.3")
+  return(rpm.dataframe2)
+}
+```
+
+
+
+
+```{r}
+emb.outliers2 <- pheatmap.down.in.hybrid("embryo_27DAP")
+floret.outliers2 <- pheatmap.down.in.hybrid("floret_0DAP")
+leaf.outliers2 <- pheatmap.down.in.hybrid("seedlingleaf_11DAS")
+root.outliers2 <- pheatmap.down.in.hybrid("radicle_root")
+
+outlier.plot2 <- rbind(emb.outliers2,floret.outliers2,leaf.outliers2,root.outliers2)
+
+pheatmap(log2(1+outlier.plot2),cluster_cols = F,cluster_rows = F,gaps_row = c(nrow(emb.outliers2),nrow(emb.outliers2)+nrow(floret.outliers2),nrow(emb.outliers2)+nrow(floret.outliers2)+nrow(root.outliers2)),border_color = NA)
+```
+
+
+```{r}
+#look.at.belowlowparent <- data.frame(rbind(cbind(rownames(emb.outliers2),"embryo"),cbind(rownames(floret.outliers2),"floret"),cbind(rownames(leaf.outliers2),"leaf"),cbind(rownames(root.outliers2),"root")))
+look.at.belowlowparent <- data.frame(rbind(cbind(rownames(emb.outliers2),"embryo"),cbind(rownames(floret.outliers2),"floret"),cbind(rownames(root.outliers2),"root")))
+names(look.at.belowlowparent) <- c("family","tissue")
+
+plot.outliers2 <- data.frame(peng.redo.rpm.TEtable[paste(look.at.belowlowparent$family),])
+plot.outliers2$family <- look.at.belowlowparent$family
+plot.outliers2$tissue <- look.at.belowlowparent$tissue
+
+melt.outliers.low <- melt(plot.outliers2,id.vars=c("family","tissue"))
+melt.outliers2.low <- merge(melt.outliers.low,peng.samples[,c("SampleID","libname","Genotype","Tissue")],by.x="variable",by.y="SampleID",all=T)
+
+melt.outliers4.low <- data.frame(matrix(NA,nrow=0,ncol=ncol(melt.outliers2.low)))
+names(melt.outliers4.low) <- names(melt.outliers2.low)
+for(i in 1:length(peng.tissue.list)){
+  tmp.colnames <- subset(peng.samples,peng.samples$Tissue == peng.tissue.list[i])
+  tmp <- peng.redo.rpm.TEtable[,tmp.colnames$SampleID]
+  for(j in 1:length(look.at.belowlowparent$family)){
+    fam.oi <- paste(look.at.belowlowparent$family[j])
+    if(rowSums(tmp[fam.oi,] >=1 ) >=3){
+      melt.outliers4.low <- rbind(melt.outliers4.low,subset(melt.outliers2.low,melt.outliers2.low$family == fam.oi & melt.outliers2.low$Tissue == peng.tissue.list[i]))
+    }
+  }
+}
+
+#ggplot(melt.outliers4.low,aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+
+ggplot(subset(melt.outliers4.low,melt.outliers4.low$family == "RLC03440"),aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+
+ggplot(subset(melt.outliers4.low,melt.outliers4.low$family == "RLX08759"),aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free") + scale_fill_brewer(palette = "Set1")
+```
+
+```{r}
+melt.outliers3.low <- subset(melt.outliers2.low,melt.outliers2.low$tissue == "embryo" & melt.outliers2.low$Tissue == "embryo_27DAP" | melt.outliers2.low$tissue == "floret" & melt.outliers2.low$Tissue == "floret_0DAP" | melt.outliers2.low$tissue == "leaf" & melt.outliers2.low$Tissue == "seedlingleaf_11DAS" | melt.outliers2.low$tissue == "root" & melt.outliers2.low$Tissue == "radicle_root")
+melt.outliers3.low$family <- factor(melt.outliers3.low$family,levels=look.at.belowlowparent$family)
+
+ggplot(melt.outliers3.low,aes(x=libname,y=value,fill=Genotype)) + geom_bar(stat="identity") + theme_classic() + facet_wrap(family~Tissue,scale="free" , ncol=6) + scale_fill_brewer(palette = "Set1")
+```
+
+```{r}
+non.additive <- data.frame(matrix(NA,nrow=length(peng.tissue.list),ncol=3))
+names(non.additive) <- c("above.both","below.both","families.expressed")
+rownames(non.additive) <- peng.tissue.list
+for(i in 1:length(peng.tissue.list)){
+  tissue.oi <- peng.tissue.list[i]
+  tmp <- deseq.peng.dat(tissue.oi)
+  families.high <- subset(tmp,tmp[,paste("is.de",tissue.oi,"BvF1",sep=".")] == "F1.up.v.B" & tmp[,paste("is.de",tissue.oi,"MvF1",sep=".")] == "F1.up.v.M")
+  families.low <- subset(tmp,tmp[,paste("is.de",tissue.oi,"BvF1",sep=".")] == "B.up.v.F1" & tmp[,paste("is.de",tissue.oi,"MvF1",sep=".")] == "M.up.v.F1")
+  non.additive[i,"above.both"] <- nrow(families.high)
+  non.additive[i,"below.both"] <- nrow(families.low)
+  non.additive[i,"families.expressed"] <- nrow(tmp)
+  assign(paste(tissue.oi,"high",sep="."),families.high)
+  assign(paste(tissue.oi,"low",sep="."),families.low)
+}
+```
+
+```{r}
+non.additive$tissue <- rownames(non.additive)
+non.additive$percent.non.additive <- rowSums(non.additive[,1:2])/non.additive$families.expressed * 100
+plot.non.additive <- melt(non.additive[,c("above.both","below.both","percent.non.additive","tissue")],id.vars="tissue")
+plot.non.additive$group <- ifelse(plot.non.additive$variable == "percent.non.additive","percent","count")
+#plot.non.additive$tissue <- factor(plot.non.additive$tissue,levels=non.additive[order(non.additive$percent.non.additive,decreasing = T),"tissue"])
+ggplot(plot.non.additive,aes(x=tissue,y=value,color=variable)) + geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(group~.,scales="free_y") + scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73"))
+
+ggplot(subset(plot.non.additive,plot.non.additive$group == "count"),aes(x=tissue,y=value,color=variable)) + geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(group~.,scales="free_y") + scale_color_manual(values = c( "#56B4E9","#E69F00"))
+
+```
+
+```{r}
+fams.non.additive <- data.frame(matrix(NA,nrow=0,ncol=3))
+names(fams.non.additive) <- c("fam","tissue","direction")
+
+for(i in 1:length(peng.tissue.list)){
+  tissue.oi <- peng.tissue.list[i]
+  families.high <- get(paste(tissue.oi,"high",sep="."))
+  families.low <- get(paste(tissue.oi,"low",sep="."))
+  if(nrow(families.high) > 0){
+    high.tmp <- data.frame(cbind(rownames(families.high),tissue.oi,"up"))
+  } else(high.tmp <- NULL)
+  if(nrow(families.low) > 0){
+    low.tmp <- data.frame(cbind(rownames(families.low),tissue.oi,"down"))
+  } else(low.tmp <- NULL)
+  tmp <- rbind(high.tmp,low.tmp)
+  names(tmp) <- c("fam","tissue","direction")
+  fams.non.additive <- rbind(fams.non.additive,tmp)
+}
+head(fams.non.additive)
+```
+
+```{r}
+fams.non.additive$fam <- paste(fams.non.additive$fam)
+fams.non.additive$tissue <- paste(fams.non.additive$tissue)
+fams.non.additive$direction <- paste(fams.non.additive$direction)
+
+non.additive.up <- subset(fams.non.additive,fams.non.additive$direction == "up")
+non.additive.down <- subset(fams.non.additive,fams.non.additive$direction == "down")
+
+non.additive.up2 <- data.frame(table(non.additive.up$fam))
+non.additive.down2 <- data.frame(table(non.additive.down$fam))
+
+table(non.additive.up2$Freq)
+table(non.additive.down2$Freq)
+```
+
+```{r}
+unique.up.na <- non.additive.up[!duplicated(non.additive.up$fam),c(1,3)]
+unique.down.na <- non.additive.down[!duplicated(non.additive.down$fam),c(1,3)]
+
+unique.up.na$order <- substr(unique.up.na$fam,0,2)
+unique.down.na$order <- substr(unique.down.na$fam,0,2)
+
+plot.na2 <- rbind(data.frame(table(unique.up.na[,2:3])),data.frame(table(unique.down.na[,2:3])))
+
+plot.na2$group <- factor(ifelse(grepl("Zm",plot.na2$order),"Genes",ifelse(grepl("DH",plot.na2$order),"Helitron",ifelse(grepl("DT",plot.na2$order),"TIR",ifelse(grepl("RL",plot.na2$order),"LTR","LINES.SINES")))),levels=c("Genes","LTR","TIR","Helitron","LINES.SINES"))
+
+ggplot(plot.na2,aes(x=direction,y=Freq,group=group,fill=group)) + geom_bar(stat="identity",color="black",position = position_fill()) + theme_classic() + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink"))
+ggplot(plot.na2,aes(x=direction,y=Freq,group=group,fill=group)) + geom_bar(stat="identity",color="black",position = position_dodge()) + theme_classic() + scale_fill_manual(values=c("darkorchid3","green","steelblue","hotpink"))
+
+unique.na <- fams.non.additive[!duplicated(fams.non.additive$fam),c(1,3)]
+unique.na.order <- data.frame(table(substr(unique.na$fam,0,2)))
+unique.na.order$percent <- unique.na.order$Freq/sum(unique.na.order$Freq) * 100
+unique.na.order
+```
+
+
+```{r}
+three.line.expression("RLG17656")
+three.line.expression("RLG03009")
+
+three.line.expression("RLG17656")
+
+```
+
+```{r}
+three.line.expression("RLC03056")
+three.line.expression("RLC12545")
+three.line.expression("RLC13934")
+three.line.expression("RLC15038")
+three.line.expression("RLG00175")
+three.line.expression("RLG00711")
+three.line.expression("RLG03601")
+three.line.expression("RLG03608")
+three.line.expression("RLG14146")
+three.line.expression("RLX03866")
+```
+
+```{r}
+three.line.expression("RLG00106")
+three.line.expression("RLG00863")
+three.line.expression("RLG17656")
+three.line.expression("RLX03104")
+three.line.expression("RLX03621")
+three.line.expression("RLX04050")
+three.line.expression("RLX08958")
+three.line.expression("RLX12618")
+three.line.expression("RLX22062")
+```
+
+```{r}
+three.line.expression(rownames(sheath_v12.high)[1])
+three.line.expression(rownames(sheath_v12.high)[2])
+three.line.expression(rownames(sheath_v12.high)[3])
+three.line.expression(rownames(sheath_v12.high)[4])
+three.line.expression(rownames(sheath_v12.high)[5])
+three.line.expression(rownames(sheath_v12.high)[6])
+three.line.expression(rownames(sheath_v12.high)[7])
+three.line.expression(rownames(sheath_v12.high)[8])
+three.line.expression(rownames(sheath_v12.high)[9])
+
+three.line.expression(rownames(sheath_v12.low)[1])
+three.line.expression(rownames(sheath_v12.low)[2])
+three.line.expression(rownames(sheath_v12.low)[3])
+three.line.expression(rownames(sheath_v12.low)[4])
+three.line.expression(rownames(sheath_v12.low)[5])
+```
+
+
+```{r}
+a <- three.line.expression("RLG00711")
+b <- three.line.expression("RLG17656")
+c <- three.line.expression("RLC24982")
+d <- three.line.expression("RLX14426")
+  
+grid.arrange(a,b,c,d,nrow=2)
+grid.arrange(b,c,nrow=1)
+```
+
+```{r}
+plot.one <- ggplot(subset(plot.non.additive,plot.non.additive$group == "count"),aes(x=tissue,y=value,color=variable)) + geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(group~.,scales="free_y") + scale_color_manual(values = c( "#56B4E9","#E69F00"))
+plot.two <- DA.of.tissue("sheath_v12")
+
+b <- three.line.expression("RLG17656")
+c <- three.line.expression("RLC24982")
+
+grid.arrange(plot.one,plot.two,b,c,nrow=2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
